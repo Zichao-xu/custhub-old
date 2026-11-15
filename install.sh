@@ -15,6 +15,7 @@ SRC=$(cd "$(dirname "$0")" && pwd)
 TOKEN=${1:?缺入池令牌(在 Mac 上跑 hub/join-cmd.sh 生成整条命令)}
 S=/var/lib/custhub; W=/srv/custhub; R=/var/lib/custhub-report; P=/var/lib/custhub-pool
 L=/usr/local/lib/custhub; U=custhub; UW=custhub-www; UT=custtun; UR=custrep
+UO=custotp; O=/var/lib/custhub-otp   # 验证器登录签发(otp.py): 独立账号, CA 私钥和验证器密钥只有它能读
 say(){ echo "[custhub] $*"; }
 
 # ---- 解令牌 ----
@@ -39,6 +40,8 @@ fi
 # ---- 账号 ----
 id "$U" >/dev/null 2>&1 || useradd --system --create-home --home-dir "/home/$U" --shell /bin/sh "$U"
 id "$UW" >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$UW"
+id "$UO" >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$UO"
+install -d -m700 -o "$UO" -g "$UO" "$O"   # 重装保留里面的 CA 和密钥
 # 客户机挂反向隧道用; shell 必须是 /bin/sh(授权里的强制命令要靠它执行), 但授权行禁了终端, 登不进来
 id "$UT" >/dev/null 2>&1 || useradd --system --create-home --home-dir "/home/$UT" --shell /bin/sh "$UT"
 install -d -m700 -o "$UT" -g "$UT" "/home/$UT/.ssh"
@@ -57,7 +60,7 @@ chmod 755 /usr/local/sbin/custrep-ssh
 # ---- 程序 ----
 install -d -m755 "$L"
 install -m755 "$SRC/custhub" /usr/local/sbin/custhub
-install -m644 "$SRC/httpd.py" "$SRC/pool.py" "$L/"
+install -m644 "$SRC/httpd.py" "$SRC/pool.py" "$SRC/otp.py" "$L/"
 install -m755 "$SRC/uninstall.sh" "$L/uninstall.sh"
 mkdir -p "$S" "$W/j" "$W/pkg" "$R" "$P"
 chmod 700 "$S"; chmod 755 "$W" "$W/j" "$W/pkg"
@@ -220,6 +223,27 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
+cat >/etc/systemd/system/custhub-otp.service <<EOF
+[Unit]
+Description=custhub one-time-code login (signs short-lived ssh certs; localhost only)
+After=network-online.target
+
+[Service]
+Environment=OTP_DIR=$O
+ExecStart=/usr/bin/python3 -I $L/otp.py serve
+User=$UO
+Group=$UO
+ReadWritePaths=$O
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
 cat >/etc/systemd/system/custhub-pool.service <<EOF
 [Unit]
 Description=custhub pool gossip
@@ -252,10 +276,10 @@ if [ -e /etc/systemd/system/wg-quick@cust0.service.d ] || [ -f /etc/wireguard/cu
   say "已拆除旧的 WireGuard 加速通道(cust0)"
 fi
 systemctl daemon-reload
-systemctl enable -q custhub-fw custhub-http custhub-pool.timer
+systemctl enable -q custhub-fw custhub-http custhub-otp custhub-pool.timer
 # 防火墙: 在跑就直接重载规则(不必 restart, 免得规则有一瞬间是空的)
 if systemctl is-active -q custhub-fw; then nft -f "$S/fw.nft" && "$L/fw-passthru.sh"; else systemctl start custhub-fw; fi
-systemctl restart custhub-http
+systemctl restart custhub-http custhub-otp
 systemctl restart custhub-pool.timer
 custhub tun-sync   # 按 tun/ 重写反向隧道授权
 custhub rep-close 0000000000000000 >/dev/null 2>&1 || true   # 顺带按 rep/ 重写回报钥匙授权(清掉过期的)

@@ -20,6 +20,10 @@
 #                             之后把签名信任清单(若有)原样输出, 客户机守护验签后应用(SPEC §5.3: 节点上线自己取)
 #   trust-put                 stdin = 签名信任清单; 只收版本号比现有新的(验签在客户机做, 中转只存只转)
 #   dir-put / dir-get         签名节点目录(中转地址 + 客户机回拨口/账号), 给新管理机用; 只经管理账号取, 客户机拿不到
+#   otp-init                  验证器登录: 没有 CA 就在本机生成(私钥不出这台机器), 输出 CA 公钥(Mac 把它记进信任清单)
+#   totp-set                  stdin 第 1 行 = 验证器密钥(base32, 由口令派生, Mac 推来), 第 2 行 = 证书可登录的账号名(逗号分隔)
+#                             只有签发服务账号能读
+#   otp-status                ca=有/无 secret=有/无 service=active/...
 # 网络节点(把客户机当代理出口, 给指纹浏览器等用; 客户机自己用独立密钥 ssh -R 挂 127.0.0.1:23000+N, 本机公网端口转进去):
 #   node-set N PORT KEYB64 [PORT2]  开/改客户 N 的节点: 公网 TCP PORT → 127.0.0.1:23000+N(socks5/http);
 #                             可选 PORT2 → 127.0.0.1:24000+N(加密入口 shadowsocks); KEYB64 = 客户机节点通道公钥
@@ -217,6 +221,20 @@ for line in sys.stdin:
     nv=$(sed -n '2s/^version \([0-9]\{1,12\}\)$/\1/p' "$t"); [ -n "$nv" ] || { rm -f "$t"; die "bad version"; }
     ov=$(sed -n '2s/^version \([0-9]*\)$/\1/p' "$S/dir.signed" 2>/dev/null || true); ov=${ov:-0}
     if [ "$nv" -gt "$ov" ]; then chmod 600 "$t"; mv -f "$t" "$S/dir.signed"; echo "stored $nv"; else rm -f "$t"; echo "kept $ov"; fi ;;
+  otp-init)
+    O=/var/lib/custhub-otp; [ -d $O ] || die "otp not installed (upgrade first)"
+    [ -f $O/ca ] || { ssh-keygen -q -t ed25519 -N '' -C "custhub-ca-$NAME" -f $O/ca && chown custotp:custotp $O/ca $O/ca.pub && chmod 600 $O/ca; }
+    cut -d' ' -f1,2 $O/ca.pub ;;
+  totp-set)
+    O=/var/lib/custhub-otp; [ -d $O ] || die "otp not installed (upgrade first)"
+    IFS= read -r k || true; IFS= read -r pr || true; k=$(tr -d ' \r' <<<"$k"); pr=$(tr -d ' \r' <<<"$pr")
+    [[ $k =~ ^[A-Z2-7]{16,64}$ ]] || die "bad secret"
+    [[ $pr =~ ^[A-Za-z0-9._-]+(,[A-Za-z0-9._-]+){0,63}$ ]] || die "bad principals"
+    (umask 077; printf '%s\n' "$k" >$O/totp.secret.new; printf '%s\n' "$pr" >$O/principals.new)
+    chown custotp:custotp $O/totp.secret.new $O/principals.new; mv -f $O/totp.secret.new $O/totp.secret; mv -f $O/principals.new $O/principals; echo ok ;;
+  otp-status)
+    O=/var/lib/custhub-otp
+    echo "ca=$([ -f $O/ca ] && echo 有 || echo 无) secret=$([ -f $O/totp.secret ] && echo 有 || echo 无) service=$(systemctl is-active custhub-otp 2>/dev/null || true)" ;;
   dir-get)
     [ -f "$S/dir.signed" ] && cat "$S/dir.signed"; true ;;
   kick-node)

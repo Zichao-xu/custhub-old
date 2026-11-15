@@ -5,11 +5,12 @@
 set -euo pipefail
 REF=${1:?缺版本}; TOKEN=${2:?缺入池令牌}
 REPO='Zichao-xu/custhub'
-SUMS='0f14a1b425d0c6aff3bf817590f03346dcab82951d904addea3ebbffd0ae0d45  install.sh
-f6894c56e17b7262dbd16720bc1e9256e928623a5fa824021d0c42d69644bcde  custhub
-ae708e6c87b0f24215451c2968db4370fb4976182e4364ff3f4224d48d55509e  httpd.py
+SUMS='793aa48594915484d7a320b4a84aa98bcd9ccdd6e19abc46f25c077eccc5ae97  install.sh
+9e66f8e0c54fdcb9c4f6c617aa10ee28d6eae1aeb4e7c3af5c4ad2d04f7f81bd  custhub
+e7a6b5b3f56516e05e2603abc90c2bcebe7ccf4549c8f55800cd0e474f0617e2  httpd.py
 84ba9823fcd77c1c4758af4ebbb7b907b22f9ffeb2d85285297bf7cbe8e59d03  pool.py
-1117b236211a3c33d58bd81d49fd62d7277fe3a1f30371fb211b69e0da39b741  uninstall.sh'
+0bc5cba32f232fa596d22e0fd3d0465a9ef58e15045a72418ab9b8e659ed17c0  otp.py
+999c7abe5ea65c852e1ae3a6358ff9e8df798b77080faaaa44bf7aaa81b41973  uninstall.sh'
 [ "$(id -u)" = 0 ] || { echo "要 root 跑(sudo -i 后再粘贴)" >&2; exit 1; }
 command -v curl >/dev/null || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl >/dev/null; }
 

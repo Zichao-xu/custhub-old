@@ -5,6 +5,7 @@
 #   passkey.py unlock [小时]  输入口令 → 主钥匙放进 ssh-agent(默认 8 小时后自动删), 之后 ssh c-N 直接用
 #   passkey.py lock           立即从 ssh-agent 删掉主钥匙
 #   passkey.py status         是否已解锁
+#   passkey.py totp-secret    输入口令 → 输出验证器密钥(base32; 由口令派生, 用途标签 totp, 给 trust.sh otp-setup 用)
 # 派生: 口令 → scrypt(n=2^17,r=8,p=1, 固定盐 + 用途标签) → 32 字节种子 → ed25519
 #   盐固定: 口令本身有 ~128 位随机熵, 不靠盐防彩虹表; 固定才能"任意机器只凭口令"解锁
 #   用途标签: ssh = 登录; 以后新增用途只换标签, 不换口令
@@ -128,6 +129,7 @@ def main(a):
     elif c == "unlock": unlock(float(a[2]) if len(a) > 2 else 8)
     elif c == "lock": lock()
     elif c == "status": print("已解锁" if in_agent() else "未解锁")
+    elif c == "totp-secret": print(base64.b32encode(derive(ask(), "totp")[0][:20]).decode())
     elif c == "_pem": seed, pub = derive(ask()); sys.stdout.write(priv_pem(seed, pub))   # 仅测试用
     else:
         print(open(__file__).read().split("\nimport")[0].replace("# ", "").split("\n", 1)[1]); sys.exit(1)

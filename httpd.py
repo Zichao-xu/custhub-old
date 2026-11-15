@@ -4,8 +4,9 @@
 #   GET  /cgi-bin/report?t=<码>&s=<步骤>&m=<说明>[&u=<用户>&h=<机器名>]  → <码>.log 追加一行; s=done 另写 <码>.done
 #   POST /cgi-bin/report?t=<码>   正文=失败日志尾 → <码>.fail(上限 24KB)
 #   POST /pool/hello              中枢之间互相报到/交换名单(池密钥签名, 见 pool.py)
+#   POST /cgi-bin/login           验证器登录: 转给本机 otp.py 签短期证书(见 otp.py)
 # 只认 /j 下还存在的码; 值保持 URL 编码原样落盘(Mac 侧解码), 只留安全字符。
-import os, re, sys, time, shutil
+import os, re, sys, time, shutil, urllib.request, urllib.error
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pool
@@ -13,6 +14,7 @@ import pool
 W = os.environ.get("WEB_DIR", "/srv/custhub")
 R = os.environ.get("REPORT_DIR", "/var/lib/custhub-report")
 PORT = int(os.environ.get("HTTP_PORT", "51880"))
+OTP_PORT = int(os.environ.get("OTP_PORT", "51881"))
 TOK = re.compile(r"^[0-9a-f]{16,64}$")
 SAFE = re.compile(r"[^A-Za-z0-9._%+/()!*~-]")
 MSG = "这条远程维护命令已过期，请向工程师重新获取一条。"
@@ -102,6 +104,18 @@ class H(BaseHTTPRequestHandler):
             except Exception as e:
                 sys.stderr.write("pool hello: %r\n" % e)
                 return self.send(400)
+        if path == "/cgi-bin/login":   # 验证器登录: 原样转给只听本机的 otp.py(CA 私钥不在这个面向公网的进程里)
+            n = min(int(self.headers.get("Content-Length") or 0), 1024)
+            body = self.rfile.read(n)
+            try:
+                rq = urllib.request.Request("http://127.0.0.1:%d/login" % OTP_PORT, data=body, method="POST",
+                                            headers={"X-Peer": self.client_address[0]})
+                with urllib.request.urlopen(rq, timeout=10) as r:
+                    return self.send(200, r.read())
+            except urllib.error.HTTPError as e:
+                return self.send(e.code, b"no\n")
+            except Exception:
+                return self.send(503, b"no\n")
         t = self.token(q) if path == "/cgi-bin/report" else None
         if not t:
             return self.send(200, b"no\n")
