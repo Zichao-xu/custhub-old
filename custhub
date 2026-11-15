@@ -17,6 +17,8 @@
 #   tun-list                  N  回拨口  是否在线(1/0)  来源公网地址(不在线为 -)
 #   tun-sync                  按 tun/ 重写 custtun 的 authorized_keys
 #   kick N                    踢掉占着客户 N 回拨口的旧连接(客户机断线重连前自己调; 只踢 custtun 的进程)
+#                             之后把签名信任清单(若有)原样输出, 客户机守护验签后应用(SPEC §5.3: 节点上线自己取)
+#   trust-put                 stdin = 签名信任清单; 只收版本号比现有新的(验签在客户机做, 中转只存只转)
 # 网络节点(把客户机当代理出口, 给指纹浏览器等用; 客户机自己用独立密钥 ssh -R 挂 127.0.0.1:23000+N, 本机公网端口转进去):
 #   node-set N PORT KEYB64 [PORT2]  开/改客户 N 的节点: 公网 TCP PORT → 127.0.0.1:23000+N(socks5/http);
 #                             可选 PORT2 → 127.0.0.1:24000+N(加密入口 shadowsocks); KEYB64 = 客户机节点通道公钥
@@ -198,7 +200,15 @@ for line in sys.stdin:
       printf '%s\t%s\t%s\t%s\n' "$n" "$p" "$up" "$peer"
     done ;;
   kick)
-    tn "$1"; kick_port $((TUN_BASE+$1)) ;;
+    tn "$1"; kick_port $((TUN_BASE+$1))
+    [ -f "$S/trust.bundle" ] && cat "$S/trust.bundle"; true ;;
+  trust-put)
+    t=$(mktemp); head -c 32768 >"$t"
+    LC_ALL=C grep -q '[^[:print:][:space:]]' "$t" && { rm -f "$t"; die "bad bundle"; }
+    [ "$(head -1 "$t")" = "custhub-trust-bundle v1" ] || { rm -f "$t"; die "bad bundle"; }
+    nv=$(sed -n '2s/^version \([0-9]\{1,12\}\)$/\1/p' "$t"); [ -n "$nv" ] || { rm -f "$t"; die "bad version"; }
+    ov=$(sed -n '2s/^version \([0-9]*\)$/\1/p' "$S/trust.bundle" 2>/dev/null || true); ov=${ov:-0}
+    if [ "$nv" -gt "$ov" ]; then chmod 644 "$t"; mv -f "$t" "$S/trust.bundle"; echo "stored $nv"; else rm -f "$t"; echo "kept $ov"; fi ;;
   kick-node)
     tn "$1"; kick_port $((NODE_BASE+$1)); kick_port $((NODE2_BASE+$1)) ;;
   node-set)
