@@ -1,16 +1,16 @@
 #!/bin/bash
-# bootstrap.sh <版本> '<入池令牌>' — 一键部署的第二段: 按固定版本从 GitHub(不通就换国内镜像)下载中枢代码,
+# bootstrap.sh <版本> '<入池令牌>' — 一键部署的第二段: 按固定版本从 GitHub(不通就换国内镜像)下载中转代码,
 # 每个文件核对 sha256(指纹写死在本文件里, 本文件的指纹又写死在一键命令里, 镜像改不了内容), 然后安装
 # 一键命令由 Mac 上的 hub/join-cmd.sh 生成; 本文件由 hub/release.sh 渲染发布, 别手改
 set -euo pipefail
 REF=${1:?缺版本}; TOKEN=${2:?缺入池令牌}
 REPO='Zichao-xu/custhub'
-SUMS='f839fa016cfe44db38c175f310652eeecb38dea792c84d702aa48d00be8e5389  install.sh
-6f8eb176e3005faaf3594188042f99dd88fbd04a9e862ce1d4296ddb58da2cc3  custhub
-e7a6b5b3f56516e05e2603abc90c2bcebe7ccf4549c8f55800cd0e474f0617e2  httpd.py
-84ba9823fcd77c1c4758af4ebbb7b907b22f9ffeb2d85285297bf7cbe8e59d03  pool.py
+SUMS='5764eb58bf0b163d87f5d6602096c1e1a099542f970f4c88de5d18f86f64ee4f  install.sh
+e5ebb3c90ed93167c21dc94660af4a3c93737d2f75fbaf01765eea3ed075705b  custhub
+f50ea4f8e0cd7f3f858156e64b203d143ca3848890bbd82cef463c11206221e2  httpd.py
+caf71b95a51aa0a400f4633f9189d82164e1c6004569e8b8d1bc10711758e410  pool.py
 0bc5cba32f232fa596d22e0fd3d0465a9ef58e15045a72418ab9b8e659ed17c0  otp.py
-999c7abe5ea65c852e1ae3a6358ff9e8df798b77080faaaa44bf7aaa81b41973  uninstall.sh'
+52646700f045c4f47b5dbd303b4a1148a2b8b4cfee2686b9768cb50c12faf12a  uninstall.sh'
 [ "$(id -u)" = 0 ] || { echo "要 root 跑(sudo -i 后再粘贴)" >&2; exit 1; }
 command -v curl >/dev/null || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl >/dev/null; }
 

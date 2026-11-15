@@ -1,13 +1,13 @@
 #!/bin/bash
-# install.sh '<入池令牌 CH1:...>' — 在任意 Debian/Ubuntu 公网机上装/升级客户接入中枢(root, 幂等, 重跑不丢客户)
-# 一般不直接跑, 由 bootstrap.sh 下载校验后调用; 令牌由 Mac 上 hub/join-cmd.sh 生成(含池密钥 + Mac 管理公钥 + 已知中枢)
+# install.sh '<入池令牌 CH1:...>' — 在任意 Debian/Ubuntu 公网机上装/升级客户接入中转(root, 幂等, 重跑不丢客户)
+# 一般不直接跑, 由 bootstrap.sh 下载校验后调用; 令牌由 Mac 上 hub/join-cmd.sh 生成(含池密钥 + Mac 管理公钥 + 已知中转)
 # 可选环境变量(只在首次安装生效): HUB_NAME  HUB_HOST(公网地址, 默认自动探测)  HTTP_PORT(8443)
 #
-# 中枢做四件事:
+# 中转做四件事:
 #   1. 反向通道: 客户机用受限账号 custtun 挂回拨口 127.0.0.1:22000+N(只能挂自己的口, 出站封死)
-#   2. HTTP: 下发接入脚本/安装包 + 收进度回报 + 中枢池报到(httpd.py / pool.py)
+#   2. HTTP: 下发接入脚本/安装包 + 收进度回报 + 中转池报到(httpd.py / pool.py)
 #   3. ssh 受限账号 custhub: Mac 只能 (a) 调 custhub 管理命令 (b) 端口转发到本机回拨口(跳板)
-#   4. 入池: 向已知中枢报到并定时互换名单, Mac 从任意一台活着的中枢拿到全名单(新中枢热加入, 不用改 Mac 配置)
+#   4. 入池: 向已知中转报到并定时互换名单, Mac 从任意一台活着的中转拿到全名单(新中转热加入, 不用改 Mac 配置)
 # (旧版还有 WireGuard cust0 加速通道, 2026-11-09 停用; 升级时自动拆掉)
 set -euo pipefail
 [ "$(id -u)" = 0 ] || { echo "要 root 跑" >&2; exit 1; }
@@ -66,7 +66,7 @@ mkdir -p "$S" "$W/j" "$W/pkg" "$R" "$P"
 chmod 700 "$S"; chmod 755 "$W" "$W/j" "$W/pkg"
 chown -R "$UW:$UW" "$R" "$P"; chmod 750 "$R"; chmod 700 "$P"   # 旧版回报目录属主是 nobody, 一并改
 (umask 077; printf '%s\n' "$POOL_KEY" >"$P/pool.key"); chown "$UW:$UW" "$P/pool.key"
-# 中枢身份(池里按它去重, 字段名沿用 srvpub): 旧版是 WG 公钥, 有就沿用; 新装取 32 字节随机数
+# 中转身份(池里按它去重, 字段名沿用 srvpub): 旧版是 WG 公钥, 有就沿用; 新装取 32 字节随机数
 [ -s "$S/server.pub" ] || head -c32 /dev/urandom | base64 >"$S/server.pub"
 pyp(){ runuser -u "$UW" -- env POOL_DIR="$P" python3 -I "$L/pool.py" "$@"; }
 
@@ -91,7 +91,7 @@ if [ -z "$HOST" ]; then
   [ -n "$HOST" ] || { echo "探测不到公网地址, 用 HUB_HOST=<公网IP> 再跑" >&2; exit 1; }
 fi
 if [ -z "$NET" ]; then
-  # 每台中枢一个网段 10.89.k.0/24, 取池里没人用的最小 k
+  # 每台中转一个网段 10.89.k.0/24, 取池里没人用的最小 k
   NET=$(python3 -Ic '
 import sys,json
 used={m["net"] for m in (json.loads(sys.argv[1])["pool"] if sys.argv[1] else []) if not m.get("left")}
@@ -115,7 +115,7 @@ try: old=json.load(open(p))
 except Exception: old={}
 same=all(old.get(k)==v for k,v in new.items())
 new["joined"]=old.get("joined") or int(time.time())
-# ver 用时间戳: 卸载会删掉 self.json, 重装若从 1 计数会小于池里留下的下线墓碑, 被别的中枢当旧记录丢掉(永远进不了池)
+# ver 用时间戳: 卸载会删掉 self.json, 重装若从 1 计数会小于池里留下的下线墓碑, 被别的中转当旧记录丢掉(永远进不了池)
 # 旧版是 1,2,3 计数(远小于时间戳), 升级时顺手迁到时间戳
 ov=old.get("ver",0)
 new["ver"]=ov if (same and ov>=1e9) else max(ov+1,int(time.time()))
@@ -161,7 +161,7 @@ table inet custhub {
 EOF
 nft -c -f "$S/fw.nft"
 # nft 的 accept 只在本表生效: 宿主机若有别家的 INPUT DROP(ufw/firewalld/云镜像自带, iptables-nft 表), 照样会被丢。
-# 探测到 iptables 才加放行, 没有就跳过; 只放中枢自己的 HTTP 端口
+# 探测到 iptables 才加放行, 没有就跳过; 只放中转自己的 HTTP 端口
 [ -x "$L/fw-passthru.sh" ] && "$L/fw-passthru.sh" stop   # 端口可能变过, 先撤旧规则
 cat >"$L/fw-passthru.sh" <<EOF
 #!/bin/sh
@@ -171,7 +171,7 @@ for r in "-p tcp --dport $HTTP_PORT"; do
     else iptables -C INPUT \$r -j ACCEPT 2>/dev/null || iptables -I INPUT 1 \$r -j ACCEPT; fi
 done
 # 网络节点的公网端口(custhub node-set 开的), 开机/重装后补回
-# 中转模式(node-relay)的端口 TCP 和 UDP 都要
+# 代理模式(node-relay)的端口 TCP 和 UDP 都要
 for f in $S/node/*; do
     [ -f "\$f" ] || continue
     pr=tcp; grep -qx 'mode=relay' "\$f" && pr="tcp udp"
@@ -290,8 +290,8 @@ systemctl is-active -q custhub-http custhub-fw || { say "服务没起来:"; syst
 r=$(pyp announce $SEEDS 2>/dev/null | tail -1 || true)
 n=$(pyp list | awk -F'\t' '$9=="0"' | wc -l)
 say "完成: $NAME  $HOST  HTTP TCP $HTTP_PORT"
-say "中枢池: 本次 ${r#reached } 台回应, 池内共 $n 台在册"
+say "中转池: 本次 ${r#reached } 台回应, 池内共 $n 台在册"
 say "云服务器记得在安全组放行 TCP 22 和 TCP $HTTP_PORT"
 code=$(python3 -Ic 'import sys,json,base64;print("CHR:"+base64.b64encode(json.dumps({"host":sys.argv[1],"http_port":int(sys.argv[2])}).encode()).decode())' "$HOST" "$HTTP_PORT")
-say "登记码(池里没有别的活中枢时, 在 Mac 上跑 hub/add.sh 粘贴它):"
+say "登记码(池里没有别的活中转时, 在 Mac 上跑 hub/add.sh 粘贴它):"
 echo "$code"

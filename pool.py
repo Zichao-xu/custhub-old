@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# pool.py — 中枢池: 中枢之间经公网 HTTP 互相报到、交换成员名单(无中心, 任意一台活着就能拿到全名单)
-#   每台中枢的成员记录: name host wg_port http_port srvpub net joined ver left
+# pool.py — 中转池: 中转之间经公网 HTTP 互相报到、交换成员名单(无中心, 任意一台活着就能拿到全名单)
+#   每台中转的成员记录: name host wg_port http_port srvpub net joined ver left
 #   合并规则: 同一 host 取 ver 大的那条(只有本人会改自己的记录, ver=改动时的时间戳, 重装后也一定更新; 下线= left=1 的墓碑, 30 天后清掉)
 #   鉴权: 池密钥 HMAC-SHA256(ts + "\n" + body), 时间差 10 分钟内有效; 请求和应答都签
 # 命令行(由 install.sh / 定时任务 / custhub 调用):
@@ -58,7 +58,7 @@ def clean(m):
             r[k] = int(r[k])
         assert isinstance(r["srvpub"], str) and len(r["srvpub"]) == 44
         assert isinstance(r["net"], str) and r["net"].count(".") == 2
-        # 反向隧道用(旧版中枢没有这两项)
+        # 反向隧道用(旧版中转没有这两项)
         r["ssh_port"] = int(m.get("ssh_port") or 22)
         k = m.get("sshkey") or ""
         assert k == "" or (isinstance(k, str) and k.startswith("ssh-ed25519 ") and len(k) < 120 and all(c.isalnum() or c in " +/=-" for c in k))
@@ -85,7 +85,7 @@ def merge(incoming):
             if not old or m["ver"] > old.get("ver", -1):
                 m["seen"] = old.get("seen", 0) if old else 0
                 pool[m["host"]] = m
-        # 同一台中枢(服务器公钥相同)换了地址: 只留版本最新的那条
+        # 同一台中转(服务器公钥相同)换了地址: 只留版本最新的那条
         best = {}
         for h, m in pool.items():
             b = best.get(m["srvpub"])
@@ -122,7 +122,7 @@ def hello(target, body_obj, timeout=8):
     ts = str(int(time.time()))
     req = urllib.request.Request("http://%s/pool/hello" % target, data=body, method="POST",
                                  headers={"X-Ts": ts, "X-Sig": sign(ts, body), "Content-Type": "application/json"})
-    # 不走系统代理: 中枢之间直连
+    # 不走系统代理: 中转之间直连
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(req, timeout=timeout) as r:
         data = r.read(1 << 20)

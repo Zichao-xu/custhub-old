@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-# 中枢 HTTP: 下发一次性接入脚本(/j)、安装包(/pkg)、收客户端进度回报(/cgi-bin/report)。
+# 中转 HTTP: 下发一次性接入脚本(/j)、安装包(/pkg)、收客户端进度回报(/cgi-bin/report)。
 # 走 http 不走 https: Win7 自带 PowerShell 2.0 没有 TLS1.2; 下发内容里没有任何密钥(隧道私钥在客户机本地生成)。
 #   GET  /cgi-bin/report?t=<码>&s=<步骤>&m=<说明>[&u=<用户>&h=<机器名>]  → <码>.log 追加一行; s=done 另写 <码>.done
 #   POST /cgi-bin/report?t=<码>   正文=失败日志尾 → <码>.fail(上限 24KB)
-#   POST /pool/hello              中枢之间互相报到/交换名单(池密钥签名, 见 pool.py)
+#   POST /pool/hello              中转之间互相报到/交换名单(池密钥签名, 见 pool.py)
 #   POST /cgi-bin/login           验证器登录: 转给本机 otp.py 签短期证书(见 otp.py)
 # 只认 /j 下还存在的码; 值保持 URL 编码原样落盘(Mac 侧解码), 只留安全字符。
 import os, re, sys, time, shutil, urllib.request, urllib.error

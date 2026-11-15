@@ -1,9 +1,9 @@
 # custhub
 
-客户远程维护接入中枢。任意一台 Debian/Ubuntu 公网机, 在服务器上以 root 粘贴一条命令即装好, 装完自动加入中枢池。
+客户远程维护接入中转。任意一台 Debian/Ubuntu 公网机, 在服务器上以 root 粘贴一条命令即装好, 装完自动加入中转池。
 
 - 一键命令由维护端生成(内含池密钥和维护端公钥, 不在本仓库); 命令按固定版本拉取本仓库文件, 逐个校验 sha256
 - 拉取顺序: api.github.com → raw.githubusercontent.com → jsDelivr → ghfast.top → gh-proxy.com
-- 卸载: `/usr/local/lib/custhub/uninstall.sh`; 也可在维护端「管理中枢」里远程升级/卸载
+- 卸载: `/usr/local/lib/custhub/uninstall.sh`; 也可在维护端「管理中转」里远程升级/卸载
 - 需要放行: TCP 22(反向通道/管理)、TCP 8443(下发/回报/组池)
 - 新管理机(Mac/Linux): 下载 `admin.py` 和 `passkey.py` 到同一目录, `python3 admin.py setup <任一中转地址>`, 输入口令后即可 `ssh c-N`

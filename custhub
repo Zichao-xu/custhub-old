@@ -1,9 +1,9 @@
 #!/bin/bash
-# custhub — 中枢上的唯一管理入口(root 跑)。Mac 经 ssh 受限账号调用, 参数全部按白名单校验。
+# custhub — 中转上的唯一管理入口(root 跑)。Mac 经 ssh 受限账号调用, 参数全部按白名单校验。
 #   info                      输出 name/host/net/wg_port/http_port/srvpub/ssh_port/sshkey/version(net/wg_port/srvpub 是旧版字段, 只为池兼容保留)
 #   upgrade REF SHA           按指定版本(git commit + bootstrap.sh 的 sha256)从 GitHub/镜像拉代码后台重装, 效果同在服务器上粘一键命令
-#   self-uninstall yes        后台卸载本机中枢(通知池子下线后清干净)
-#   pool                      中枢池名单 TSV: name host wg_port http_port srvpub net joined seen left
+#   self-uninstall yes        后台卸载本机中转(通知池子下线后清干净)
+#   pool                      中转池名单 TSV: name host wg_port http_port srvpub net joined seen left
 #   drop N                    清旧版 WG 授权残留(WG 已停用, 兼容老清单)
 #   job-put TOKEN             stdin = tar(TOKEN.ps1 TOKEN.m.ps1 TOKEN.sh), 放到下发目录
 #   job-rm TOKEN              删下发脚本和回报
@@ -11,6 +11,7 @@
 #   done TOKEN | fail TOKEN   完成回报 / 失败日志尾
 #   pkg-sums                  已有安装包的 sha256  相对路径
 #   pkg-put                   stdin = tar, 解到安装包目录
+#   pkg-rm DIR                删掉安装包目录下的测试子目录(只认 test 开头的名字, 安装包本身删不了)
 # 反向隧道(客户机用 custtun 账号 ssh -R 挂回拨口 127.0.0.1:22000+N, N = Mac 上的全局别名号 c-N):
 #   tun-set N KEYB64          登记/更新客户 N 的 ssh 公钥(base64 的 "ssh-ed25519 AAAA...")
 #   tun-del N                 撤销客户 N
@@ -18,7 +19,10 @@
 #   tun-sync                  按 tun/ 重写 custtun 的 authorized_keys
 #   kick N                    踢掉占着客户 N 回拨口的旧连接(客户机断线重连前自己调; 只踢 custtun 的进程)
 #                             之后把签名信任清单(若有)原样输出, 客户机守护验签后应用(SPEC §5.3: 节点上线自己取)
+#                             再输出签名客户机发布清单(若有): 客户机程序验签后自升级(二进制从 /pkg/client/ 取)
 #   trust-put                 stdin = 签名信任清单; 只收版本号比现有新的(验签在客户机做, 中转只存只转)
+#   release-put               stdin = 签名客户机发布清单(custhub-release v1); 只收版本比现有新的; 验签同样在客户机做
+#   release-get               当前发布清单(没有则空)
 #   dir-put / dir-get         签名节点目录(中转地址 + 客户机回拨口/账号), 给新管理机用; 只经管理账号取, 客户机拿不到
 #   otp-init                  验证器登录: 没有 CA 就在本机生成(私钥不出这台机器), 输出 CA 公钥(Mac 把它记进信任清单)
 #   totp-set                  stdin 第 1 行 = 验证器密钥(base32, 由口令派生, Mac 推来), 第 2 行 = 证书可登录的账号名(逗号分隔)
@@ -28,15 +32,15 @@
 #   node-set N PORT KEYB64 [PORT2]  开/改客户 N 的节点: 公网 TCP PORT → 127.0.0.1:23000+N(socks5/http);
 #                             可选 PORT2 → 127.0.0.1:24000+N(加密入口 shadowsocks); KEYB64 = 客户机节点通道公钥
 #   node-del N                关客户 N 的节点(撤公钥、关端口)
-#   node-relay N PORT KEYB64 PORT2 PKG SHA   (stdin 一行: 账号 密码 加密方法 加密密钥) 开/改客户 N 的节点(中转模式):
-#                             会合点上跑 sing-box(PKG = /pkg 下的 Linux 版, 按 SHA 校验后装到 /usr/local/lib/custhub/sing-box)
+#   node-relay N PORT KEYB64 PORT2 PKG SHA   (stdin 一行: 账号 密码 加密方法 加密密钥) 开/改客户 N 的节点(代理模式):
+#                             中转上跑 sing-box(PKG = /pkg 下的 Linux 版, 按 SHA 校验后装到 /usr/local/lib/custhub/sing-box)
 #                             公网 PORT = socks5/http(TCP+UDP), PORT2 = shadowsocks(TCP+UDP); 唯一出口 = 127.0.0.1:23000+N
 #                             (客户机的 microsocks 经节点通道挂上来), UDP 用 UDP-over-TCP v2 带过去; 客户机不用装 sing-box。
 #                             配置由这里按参数生成, 不收外来配置文件
 #   node-list                 N  公网端口  通道是否在线(1/0)  公网端口是否在听(1/0)  端口2  通道2  在听2(没开端口2 则为 - - -)
 #   kick-node N               踢掉占着客户 N 节点通道的旧连接(客户机节点守护重连前自己调)
 # 进度回报的 SSH 备用通道(客户机开着代理、HTTP 回报被弄丢时用; 账号 custrep, 每次接入一把一次性钥匙, 只能写这一次的回报):
-#   rep-open TOKEN KEYB64     登记本次接入的回报钥匙(池里每台中枢都登记, 客户机哪台能连用哪台)
+#   rep-open TOKEN KEYB64     登记本次接入的回报钥匙(池里每台中转都登记, 客户机哪台能连用哪台)
 #   rep-close TOKEN           撤销(job-rm 也会撤); 超过 3 小时的自动清掉
 #   rep-in TOKEN log|fail     custrep 的强制命令调用: stdin 每行 "步骤<TAB>说明[<TAB>用户 机器名]" 追加到回报; fail = stdin 是失败日志尾
 set -euo pipefail
@@ -183,6 +187,9 @@ for line in sys.stdin:
       mkdir -p "$W/pkg/$(dirname "$f")"; mv -f "$t/$f" "$W/pkg/$f"; chmod 644 "$W/pkg/$f"
     done
     rm -rf "$t"; find "$W/pkg" -type d -exec chmod 755 {} + ;;
+  pkg-rm)
+    [[ ${1:-} =~ ^test[a-z0-9-]{0,28}$ ]] || die "only test* directories"
+    [ -d "$W/pkg/$1" ] && rm -rf "${W:?}/pkg/$1" && echo "removed $1" || echo "no $1" ;;
   tun-set)
     tn "$1"; k=$(printf '%s' "${2:-}" | base64 -d 2>/dev/null | tr -d '\r\n')
     [[ $k =~ ^ssh-ed25519\ [A-Za-z0-9+/]{68}$ ]] || die "bad ssh key"
@@ -206,7 +213,19 @@ for line in sys.stdin:
     done ;;
   kick)
     tn "$1"; kick_port $((TUN_BASE+$1))
-    [ -f "$S/trust.bundle" ] && cat "$S/trust.bundle"; true ;;
+    [ -f "$S/trust.bundle" ] && cat "$S/trust.bundle"
+    [ -f "$S/client.release" ] && cat "$S/client.release"; true ;;
+  release-put)
+    t=$(mktemp); head -c 32768 >"$t"
+    LC_ALL=C grep -q '[^[:print:][:space:]]' "$t" && { rm -f "$t"; die "bad release"; }
+    [ "$(head -1 "$t")" = "custhub-release v1" ] || { rm -f "$t"; die "bad release"; }
+    nv=$(sed -n '2s/^version \([0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\)$/\1/p' "$t"); [ -n "$nv" ] || { rm -f "$t"; die "bad version"; }
+    ov=$(sed -n '2s/^version \(.*\)$/\1/p' "$S/client.release" 2>/dev/null || true); ov=${ov:-0.0.0}
+    if [ "$nv" != "$ov" ] && [ "$(printf '%s\n%s\n' "$ov" "$nv" | sort -V | tail -1)" = "$nv" ]; then
+      chmod 644 "$t"; mv -f "$t" "$S/client.release"; echo "stored $nv"
+    else rm -f "$t"; echo "kept $ov"; fi ;;
+  release-get)
+    [ -f "$S/client.release" ] && cat "$S/client.release"; true ;;
   trust-put)
     t=$(mktemp); head -c 32768 >"$t"
     LC_ALL=C grep -q '[^[:print:][:space:]]' "$t" && { rm -f "$t"; die "bad bundle"; }
@@ -254,7 +273,7 @@ for line in sys.stdin:
       for f in "$S"/node/*; do [ -f "$f" ] && [ "${f##*/}" != "$n" ] && grep -qxE "port2?=$q" "$f" && die "port $q used by node ${f##*/}"; done
       if [ "$q" != "$old" ] && [ "$q" != "$old2" ] && ss -Hltn "sport = :$q" | grep -q .; then die "port $q busy"; fi
     done
-    if grep -qx 'mode=relay' "$S/node/$n" 2>/dev/null; then   # 从中转模式切回端口转发: 先停中转服务和 UDP 放行
+    if grep -qx 'mode=relay' "$S/node/$n" 2>/dev/null; then   # 从代理模式切回端口转发: 先停代理服务和 UDP 放行
       node_units_off "$n"; rm -f "$NODE_CFG/$n.json"; for q in $old $old2; do node_ipt del "$q"; node_ipt del "$q" udp; done; old=; old2=
     fi
     printf 'port=%s\nkey=%s\nport2=%s\n' "$p" "$k" "$p2" >"$S/node/$n"; tun_sync
@@ -334,14 +353,14 @@ CFGPY
     pub(){ grep -qE ":$1\$" <<<"$ls" && echo 1 || echo 0; }
     for f in "$S"/node/*; do
       [ -f "$f" ] || continue; n=${f##*/}; p=$(sed -n 's/^port=//p' "$f"); p2=$(sed -n 's/^port2=//p' "$f")
-      b2=$((NODE2_BASE+n)); grep -qx 'mode=relay' "$f" && b2=$((NODE_BASE+n))   # 中转模式两个入口共用一条节点通道
+      b2=$((NODE2_BASE+n)); grep -qx 'mode=relay' "$f" && b2=$((NODE_BASE+n))   # 代理模式两个入口共用一条节点通道
       if [ -n "$p2" ]; then x=$(printf '%s\t%s\t%s' "$p2" "$(up "$b2")" "$(pub "$p2")"); else x=$(printf -- '-\t-\t-'); fi
       printf '%s\t%s\t%s\t%s\t%s\n' "$n" "$p" "$(up $((NODE_BASE+n)))" "$(pub "$p")" "$x"
     done ;;
   upgrade)
     [[ ${1:-} =~ ^[0-9a-f]{40}$ ]] && [[ ${2:-} =~ ^[0-9a-f]{64}$ ]] || die "bad version"
     [ -n "${REPO:-}" ] || die "本机没记仓库(老版本装的), 请在服务器上粘一次一键命令"
-    # 入池令牌用本机已有的: 池密钥 + 管理公钥 + 池里其他中枢当种子
+    # 入池令牌用本机已有的: 池密钥 + 管理公钥 + 池里其他中转当种子
     k=$(cat /var/lib/custhub-pool/pool.key)
     # 管理公钥 = 不带信任清单标记的那行(信任清单行 custhub-trust:* 是口令主钥匙/CA, 不能当成管理钥匙带进重装)
     a=$(grep -v 'custhub-trust:' "/home/custhub/.ssh/authorized_keys" | sed -n 's/^.*command="[^"]*" //p' | head -1 | cut -d' ' -f1,2)
