@@ -134,8 +134,8 @@ chmod 755 /usr/local/sbin/custhub-ssh
 printf '%s ALL=(root) NOPASSWD: /usr/local/sbin/custhub\n%s ALL=(root) NOPASSWD: /usr/local/sbin/custhub kick *, /usr/local/sbin/custhub kick-node *\n%s ALL=(root) NOPASSWD: /usr/local/sbin/custhub rep-in *\n' "$U" "$UT" "$UR" >/etc/sudoers.d/custhub; chmod 440 /etc/sudoers.d/custhub
 install -d -m700 -o "$U" -g "$U" "/home/$U/.ssh"
 # 信任清单行(custhub-trust:名字, Mac 端 hub/trust.sh 推的: 口令主钥匙等)重装时保留
-{ grep 'custhub-trust:' "/home/$U/.ssh/authorized_keys" 2>/dev/null || true
-  echo "restrict,port-forwarding,command=\"/usr/local/sbin/custhub-ssh\" $ADMIN_KEY"; } >"/home/$U/.ssh/ak.new"
+{ echo "restrict,port-forwarding,command=\"/usr/local/sbin/custhub-ssh\" $ADMIN_KEY"   # 管理钥匙必须在第一行(远程升级按它取)
+  grep 'custhub-trust:' "/home/$U/.ssh/authorized_keys" 2>/dev/null | grep -vF "$ADMIN_KEY" || true; } >"/home/$U/.ssh/ak.new"
 mv "/home/$U/.ssh/ak.new" "/home/$U/.ssh/authorized_keys"
 chown "$U:$U" "/home/$U/.ssh/authorized_keys"; chmod 600 "/home/$U/.ssh/authorized_keys"
 if sshd -T -C "user=$U,host=x,addr=127.0.0.1" 2>/dev/null | grep -qiE '^allowtcpforwarding (no|remote)'; then

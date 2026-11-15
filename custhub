@@ -343,7 +343,9 @@ CFGPY
     [ -n "${REPO:-}" ] || die "本机没记仓库(老版本装的), 请在服务器上粘一次一键命令"
     # 入池令牌用本机已有的: 池密钥 + 管理公钥 + 池里其他中枢当种子
     k=$(cat /var/lib/custhub-pool/pool.key)
-    a=$(sed -n 's/^.*command="[^"]*" //p' "/home/custhub/.ssh/authorized_keys" | head -1 | cut -d' ' -f1,2)
+    # 管理公钥 = 不带信任清单标记的那行(信任清单行 custhub-trust:* 是口令主钥匙/CA, 不能当成管理钥匙带进重装)
+    a=$(grep -v 'custhub-trust:' "/home/custhub/.ssh/authorized_keys" | sed -n 's/^.*command="[^"]*" //p' | head -1 | cut -d' ' -f1,2)
+    [ -n "$a" ] || die "找不到管理公钥"
     seeds=$(POOL_DIR=/var/lib/custhub-pool python3 -I /usr/local/lib/custhub/pool.py list | awk -F'\t' -v me="${HOST:-}" '$9=="0" && $2!=me {printf "%s:%s ", $2, $4}')
     tok=$(python3 -Ic 'import sys,json,base64;k,a,*s=sys.argv[1:];print("CH1:"+base64.b64encode(json.dumps({"k":k,"a":a,"s":s},separators=(",",":")).encode()).decode())' "$k" "$a" $seeds)
     cat >"$S/upgrade.sh" <<EOF
