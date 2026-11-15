@@ -6,3 +6,4 @@
 - 拉取顺序: api.github.com → raw.githubusercontent.com → jsDelivr → ghfast.top → gh-proxy.com
 - 卸载: `/usr/local/lib/custhub/uninstall.sh`; 也可在维护端「管理中枢」里远程升级/卸载
 - 需要放行: TCP 22(反向通道/管理)、TCP 8443(下发/回报/组池)
+- 新管理机(Mac/Linux): 下载 `admin.py` 和 `passkey.py` 到同一目录, `python3 admin.py setup <任一中转地址>`, 输入口令后即可 `ssh c-N`
