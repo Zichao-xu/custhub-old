@@ -5,7 +5,7 @@
 #   self-uninstall yes        后台卸载本机中转(通知池子下线后清干净)
 #   pool                      中转池名单 TSV: name host wg_port http_port srvpub net joined seen left
 #   drop N                    清旧版 WG 授权残留(WG 已停用, 兼容老清单)
-#   job-put TOKEN             stdin = tar(TOKEN.ps1 TOKEN.m.ps1 TOKEN.sh), 放到下发目录
+#   job-put TOKEN             stdin = tar(TOKEN.ps1 TOKEN.sh [TOKEN.join] [TOKEN.m.ps1]), 放到下发目录
 #   job-rm TOKEN              删下发脚本和回报
 #   report TOKEN FROM         回报日志第 FROM 行起
 #   done TOKEN | fail TOKEN   完成回报 / 失败日志尾
@@ -136,10 +136,12 @@ case $cmd in
   job-put)
     tok "$1"; t=$(mktemp -d)
     tar -x -C "$t" -f - --no-same-owner
-    for f in "$1.ps1" "$1.m.ps1" "$1.sh"; do [ -f "$t/$f" ] || die "missing $f"; install -m644 "$t/$f" "$W/j/$f"; done
+    for f in "$1.ps1" "$1.sh"; do [ -f "$t/$f" ] || die "missing $f"; install -m644 "$t/$f" "$W/j/$f"; done
+    # 新版接入: 接入清单 TOKEN.join(客户机程序 custhub join 取); 旧版主脚本 TOKEN.m.ps1 可选
+    for f in "$1.join" "$1.m.ps1"; do [ -f "$t/$f" ] && install -m644 "$t/$f" "$W/j/$f"; done; true
     rm -rf "$t" ;;
   job-rm)
-    tok "$1"; rm -f "$W/j/$1".ps1 "$W/j/$1".m.ps1 "$W/j/$1".sh "$R/$1".*
+    tok "$1"; rm -f "$W/j/$1".ps1 "$W/j/$1".m.ps1 "$W/j/$1".sh "$W/j/$1".join "$R/$1".*
     if [ -f "$S/rep/$1" ]; then lock; rm -f "$S/rep/$1"; rep_sync; fi ;;
   rep-open)
     tok "$1"; k=$(printf '%s' "${2:-}" | base64 -d 2>/dev/null | tr -d '\r\n')
