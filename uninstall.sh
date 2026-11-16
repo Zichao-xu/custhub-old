@@ -19,14 +19,14 @@ fi
 
 echo "… 通知中转池: 本机下线"
 [ -f "$L/pool.py" ] && runuser -u custhub-www -- env POOL_DIR="$P" python3 -I "$L/pool.py" leave 2>/dev/null | tail -1
-systemctl disable --now custhub-pool.timer custhub-http custhub-otp "wg-quick@$IF" custhub-fw 2>/dev/null
+systemctl disable --now custhub-pool.timer custhub-release.timer custhub-http custhub-otp "wg-quick@$IF" custhub-fw 2>/dev/null
 for u in /etc/systemd/system/custhub-node-*.socket; do [ -f "$u" ] && systemctl disable --now "${u##*/}" "$(basename "$u" .socket).service" 2>/dev/null; done
 rm -f /etc/systemd/system/custhub-node-*.socket /etc/systemd/system/custhub-node-*.service
 [ -x "$L/fw-passthru.sh" ] && "$L/fw-passthru.sh" stop
 nft delete table inet custhub 2>/dev/null
 ip link del "$IF" 2>/dev/null
 rm -f /etc/systemd/system/custhub-fw.service /etc/systemd/system/custhub-http.service /etc/systemd/system/custhub-otp.service \
-      /etc/systemd/system/custhub-pool.service /etc/systemd/system/custhub-pool.timer \
+      /etc/systemd/system/custhub-pool.service /etc/systemd/system/custhub-pool.timer /etc/systemd/system/custhub-release.service /etc/systemd/system/custhub-release.timer \
       "/etc/wireguard/$IF.conf" /usr/local/sbin/custhub /usr/local/sbin/custhub-ssh /usr/local/sbin/custrep-ssh /etc/sudoers.d/custhub
 rm -rf "/etc/systemd/system/wg-quick@$IF.service.d" "$S" "$W" "$R" "$P" "$L" /var/lib/custhub-otp
 # 管理端(Mac)的复用连接还挂着这个账号的进程时 userdel 会拒绝, 先结束它们

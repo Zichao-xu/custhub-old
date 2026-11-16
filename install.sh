@@ -268,6 +268,29 @@ RandomizedDelaySec=30
 WantedBy=timers.target
 EOF
 
+# 客户机发布物(SPEC §6.1): 每 10 分钟主动拉一次(GitHub 最新 Release / 池里其他中转), 验签通过才收
+cat >/etc/systemd/system/custhub-release.service <<EOF
+[Unit]
+Description=custhub pull client release
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/custhub release-pull
+EOF
+cat >/etc/systemd/system/custhub-release.timer <<EOF
+[Unit]
+Description=custhub pull client release every 10 min
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target
+EOF
+
 # 旧版的 WireGuard 加速通道(cust0)拆掉: 先去掉它对防火墙的依赖, 再停; 反向通道不受影响
 if [ -e /etc/systemd/system/wg-quick@cust0.service.d ] || [ -f /etc/wireguard/cust0.conf ]; then
   rm -rf /etc/systemd/system/wg-quick@cust0.service.d; systemctl daemon-reload
@@ -276,11 +299,11 @@ if [ -e /etc/systemd/system/wg-quick@cust0.service.d ] || [ -f /etc/wireguard/cu
   say "已拆除旧的 WireGuard 加速通道(cust0)"
 fi
 systemctl daemon-reload
-systemctl enable -q custhub-fw custhub-http custhub-otp custhub-pool.timer
+systemctl enable -q custhub-fw custhub-http custhub-otp custhub-pool.timer custhub-release.timer
 # 防火墙: 在跑就直接重载规则(不必 restart, 免得规则有一瞬间是空的)
 if systemctl is-active -q custhub-fw; then nft -f "$S/fw.nft" && "$L/fw-passthru.sh"; else systemctl start custhub-fw; fi
 systemctl restart custhub-http custhub-otp
-systemctl restart custhub-pool.timer
+systemctl restart custhub-pool.timer custhub-release.timer
 custhub tun-sync   # 按 tun/ 重写反向隧道授权
 custhub rep-close 0000000000000000 >/dev/null 2>&1 || true   # 顺带按 rep/ 重写回报钥匙授权(清掉过期的)
 sleep 1

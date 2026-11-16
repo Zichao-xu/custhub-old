@@ -23,6 +23,9 @@
 #   trust-put                 stdin = 签名信任清单; 只收版本号比现有新的(验签在客户机做, 中转只存只转)
 #   release-put               stdin = 签名客户机发布清单(custhub-release v1); 只收版本比现有新的; 验签同样在客户机做
 #   release-get               当前发布清单(没有则空)
+#   release-pull              (定时器每 10 分钟)主动拉客户机发布物(SPEC §6.1): 源头 = 公开 GitHub 项目的最新 Release
+#                             (直连 → ghfast → gh-proxy), 再看池里其他中转; 版本更高且主钥匙验签通过才收,
+#                             各平台程序按清单核 sha512 后放 /pkg/client/, 清单另存 /pkg/client/release.txt 供客户机轮询
 #   dir-put / dir-get         签名节点目录(中转地址 + 客户机回拨口/账号), 给新管理机用; 只经管理账号取, 客户机拿不到
 #   otp-init                  验证器登录: 没有 CA 就在本机生成(私钥不出这台机器), 输出 CA 公钥(Mac 把它记进信任清单)
 #   totp-set                  stdin 第 1 行 = 验证器密钥(base32, 由口令派生, Mac 推来), 第 2 行 = 证书可登录的账号名(逗号分隔)
@@ -224,8 +227,40 @@ for line in sys.stdin:
     nv=$(sed -n '2s/^version \([0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\)$/\1/p' "$t"); [ -n "$nv" ] || { rm -f "$t"; die "bad version"; }
     ov=$(sed -n '2s/^version \(.*\)$/\1/p' "$S/client.release" 2>/dev/null || true); ov=${ov:-0.0.0}
     if [ "$nv" != "$ov" ] && [ "$(printf '%s\n%s\n' "$ov" "$nv" | sort -V | tail -1)" = "$nv" ]; then
-      chmod 644 "$t"; mv -f "$t" "$S/client.release"; echo "stored $nv"
+      chmod 644 "$t"; mv -f "$t" "$S/client.release"; mkdir -p "$W/pkg/client"; install -m644 "$S/client.release" "$W/pkg/client/release.txt"; echo "stored $nv"
     else rm -f "$t"; echo "kept $ov"; fi ;;
+  release-pull)
+    exec 9>"$S/release.lock"; flock -n 9 || exit 0
+    REPO=${RELEASE_REPO:-Zichao-xu/custhub}
+    ov=$(sed -n '2s/^version \(.*\)$/\1/p' "$S/client.release" 2>/dev/null || true); ov=${ov:-0.0.0}
+    t=$(mktemp -d); trap 'rm -rf "$t"' EXIT
+    # 验签钥匙 = 跳板账号里信任清单推来的主钥匙(中转不额外保存信任根)
+    grep 'custhub-trust:master' /home/custhub/.ssh/authorized_keys 2>/dev/null | grep -o 'ssh-ed25519 [A-Za-z0-9+/=]*' | sed 's/^/custhub /' >"$t/allowed"
+    [ -s "$t/allowed" ] || { echo "no master key yet"; exit 0; }
+    gh="https://github.com/$REPO/releases/latest/download"
+    srcs="$gh https://ghfast.top/$gh https://gh-proxy.com/$gh"
+    # 池里其他中转(它们拉到的同样带签名; 拉不到 GitHub 的从这里跟上)
+    for p in $(POOL_DIR=/var/lib/custhub-pool python3 -I /usr/local/lib/custhub/pool.py list 2>/dev/null | awk -F'\t' -v me="$HOST" '$2!=me && $9=="" && $4~/^[0-9]+$/ {print "http://"$2":"$4"/pkg/client"}'); do srcs="$srcs $p"; done
+    for b in $srcs; do
+      curl -fsSL -m 30 "$b/$( [ "${b#http://}" != "$b" ] && echo release.txt || echo custhub.release)" -o "$t/m" 2>/dev/null || continue
+      [ "$(head -1 "$t/m")" = "custhub-release v1" ] || continue
+      nv=$(sed -n '2s/^version \([0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\)$/\1/p' "$t/m"); [ -n "$nv" ] || continue
+      [ "$nv" != "$ov" ] && [ "$(printf '%s\n%s\n' "$ov" "$nv" | sort -V | tail -1)" = "$nv" ] || continue
+      awk '/^--sig--$/{exit} {print}' "$t/m" >"$t/data"
+      awk '/^--sig--$/{s=1; next} /^--end--$/{exit} s' "$t/m" >"$t/sig"
+      ssh-keygen -Y verify -f "$t/allowed" -I custhub -n custhub-release -s "$t/sig" <"$t/data" >/dev/null 2>&1 || { echo "$b: $nv 验签没过, 跳过"; continue; }
+      ok=1; mkdir -p "$t/bin"
+      while read -r _ plat size sha; do
+        n="custhub-$nv-$plat"; case $plat in win-*) n="$n.exe" ;; esac
+        curl -fsSL -m 300 "$b/$n" -o "$t/bin/$n" 2>/dev/null &&
+          [ "$(stat -c %s "$t/bin/$n")" = "$size" ] && [ "$(sha512sum "$t/bin/$n" | cut -d' ' -f1)" = "$sha" ] || { ok=; break; }
+      done < <(grep '^file ' "$t/data")
+      [ -n "$ok" ] || { echo "$b: $nv 程序不全或哈希不符, 跳过"; continue; }
+      mkdir -p "$W/pkg/client"; install -m644 "$t"/bin/* "$W/pkg/client/"
+      install -m644 "$t/m" "$S/client.release"; install -m644 "$t/m" "$W/pkg/client/release.txt"
+      echo "pulled $nv from $b"; exit 0
+    done
+    echo "kept $ov" ;;
   release-get)
     [ -f "$S/client.release" ] && cat "$S/client.release"; true ;;
   trust-put)
