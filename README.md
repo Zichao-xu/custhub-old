@@ -1,5 +1,15 @@
 # custhub
 
+本仓库三部分:
+
+| 位置 | 是什么 |
+|---|---|
+| `client/` | 客户机程序 `custhub` 的 C 源码(只用 Monocypher 做密码学, SSH 调系统的 ssh/dropbear); 说明见 `client/README.md` |
+| Releases | `custhub` 各平台二进制 + 主钥匙签名的发布清单 `custhub.release`; 中转自动拉取验签, 客户机自动升级 |
+| 根目录其余文件 | 中转端(旧实现, bash + Python; 将由 `custhub` 取代) |
+
+## 中转端
+
 客户远程维护接入中转。任意一台 Debian/Ubuntu 公网机, 在服务器上以 root 粘贴一条命令即装好, 装完自动加入中转池。
 
 - 一键命令由维护端生成(内含池密钥和维护端公钥, 不在本仓库); 命令按固定版本拉取本仓库文件, 逐个校验 sha256
