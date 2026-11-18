@@ -45,7 +45,7 @@ OpenWrt（安装目录下有 `ak/`，或 `ssh` 指向 dbclient）用 dropbear �
 
 ### 自升级
 
-守护约每 10 分钟向正连着的中转取一次**发布清单** `http://中转:http_port/pkg/client/release.txt`（主钥匙签名，命名空间 `custhub-release`），重连做 kick 时也顺带看一次。清单的来历见 spec §6.1：发布者在公开 GitHub 项目建 Release，中转每 10 分钟自己去拉（或从别的中转拉）、验签后放到 `/pkg/client/`。
+守护约每 2~3 分钟向正连着的中转取一次**发布清单** `http://中转:http_port/pkg/client/release.txt`（主钥匙签名，命名空间 `custhub-release`），重连做 kick 时也顺带看一次。清单的来历见 spec §6.1：发布者在公开 GitHub 项目建 Release，中转每 10 分钟自己去拉（或从别的中转拉）、验签后放到 `/pkg/client/`。
 
 ```
 custhub-release v1

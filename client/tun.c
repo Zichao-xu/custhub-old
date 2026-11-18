@@ -188,7 +188,7 @@ int cmd_tun(int argc, char **argv)
             meshd_tick(&c, alive, na);
         }
         if (now >= next_poll) {
-            next_poll = now + 600 + (now % 120);           /* 每 10 分钟左右, 错开各客户机 */
+            next_poll = now + 120 + (now % 60);            /* 每 2~3 分钟, 错开各客户机(只取一份几百字节的清单, 中转扛得住) */
             for (int i = 0; i < nhubs; i++) {
                 if (!hubs[i].want || !plat_alive(&hubs[i].p)) continue;   /* 问正连着的中转 */
                 if (http_get_text(hubs[i].host, c.http_port, "/pkg/client/release.txt", kick, sizeof kick) == 200) {

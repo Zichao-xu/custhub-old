@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 #ifndef CR_VERSION                       /* 测试可用 -DCR_VERSION 覆盖 */
-#define CR_VERSION "0.2.2"
+#define CR_VERSION "0.2.3"
 #endif
 #define MARK       "custhub-trust"
 #define OLDKEY     "cust-remote"          /* 旧管理钥匙注释(过渡期仍认它验签) */

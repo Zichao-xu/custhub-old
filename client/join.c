@@ -328,10 +328,46 @@ int st_get(const char *k, char *v, size_t cap)
     return -1;
 }
 
+/* 重接前已经是 custhub 守护(有 client.conf): 原配置各留一份 .prev, 新守护连不上时换回去再起旧守护
+ *   不留的话回滚只认旧版的 tun.ps1 / svc.bak, client.conf 却已改成新回拨口: Windows 直接不回滚,
+ *   其他平台「恢复」出来的守护读的还是新配置 → 机器失联(11-19 c-16 重接 22020 失败后就断了) */
+static const char *TUN_FILES[] = { "client.conf", "hubs.txt", NULL };
+static char tun_buf[32768];
+
+static void tun_files_snapshot(void)
+{
+    char p[PATHLEN], q[PATHLEN + 8];
+    pjoin(p, "client.conf");
+    int had = plat_is_file(p);
+    for (int i = 0; TUN_FILES[i]; i++) {
+        pjoin(p, TUN_FILES[i]); snprintf(q, sizeof q, "%s.prev", p);
+        long n = had ? read_file(p, tun_buf, sizeof tun_buf) : -1;
+        if (n < 0 || write_file(q, tun_buf, (size_t)n)) remove(q);
+    }
+}
+
+static int tun_files_prev(void)
+{
+    char p[PATHLEN];
+    pjoin(p, "client.conf.prev");
+    return plat_is_file(p);
+}
+
+static void tun_files_restore(void)
+{
+    char p[PATHLEN], q[PATHLEN + 8];
+    for (int i = 0; TUN_FILES[i]; i++) {
+        pjoin(p, TUN_FILES[i]); snprintf(q, sizeof q, "%s.prev", p);
+        long n = read_file(q, tun_buf, sizeof tun_buf);
+        if (n >= 0 && write_file(p, tun_buf, (size_t)n) == 0) remove(q);
+    }
+}
+
 /* 通道: hubs.txt + client.conf + 程序装进安装目录; 钥匙由平台流程先生成好 */
 void write_tunnel_files(const char *ssh_path)
 {
     char p[PATHLEN], conf[PATHLEN + 64];
+    tun_files_snapshot();
     pjoin(p, "hubs.txt");
     if (write_file(p, J.hubs, strlen(J.hubs))) jfail("写不了 %s", p);
     int n = snprintf(conf, sizeof conf, "port %s\n", J.tunport);
@@ -376,6 +412,7 @@ void legacy_cleanup(void)
     pjoin(p, "tun.d");
     if (plat_is_dir(p)) plat_rmtmp(p);
     pjoin(p, "svc.bak"); remove(p);                       /* 成功了, 回滚用的备份不再需要 */
+    for (int i = 0; TUN_FILES[i]; i++) { char q[PATHLEN + 8]; pjoin(p, TUN_FILES[i]); snprintf(q, sizeof q, "%s.prev", p); remove(q); }
 #ifndef _WIN32
     /* 管理端「移除客户」仍按旧路径调 uninstall.sh: 留个转发到本程序的壳 */
     char sh[PATHLEN + 64];
@@ -401,14 +438,17 @@ int wait_link(int secs)
 void link_or_rollback(int secs)
 {
     if (wait_link(secs)) return;
-    if (!service_had_prior()) jfail("%d 秒内反向通道没连通", secs);
-    doing("新守护 %d 秒内没连上, 恢复旧守护", secs);
-    service_restore();
+    int conf = tun_files_prev();                           /* 原来就是 custhub 守护: 原配置换回去 */
+    if (!service_had_prior() && !conf) jfail("%d 秒内反向通道没连通", secs);
+    doing("新守护 %d 秒内没连上, 恢复旧守护", secs);   /* 管理端看到这句会把原隧道号的授权先放回去 */
     char p[PATHLEN], buf[4096];
     pjoin(p, "tun-status.txt");
-    for (int i = 0; i < 60; i += 2) {                     /* 旧守护的状态没有标识行, 有 up 就算回来了 */
+    remove(p);                                             /* 新守护留下的 down 状态不算 */
+    if (conf) tun_files_restore();
+    service_restore();
+    for (int i = 0; i < 60; i += 2) {                     /* 旧版守护的状态没有标识行, custhub 守护有: 有 up 就算回来了 */
         plat_sleep(2);
-        if (read_file(p, buf, sizeof buf) > 0 && strncmp(buf, "# custhub ", 10) && strstr(buf, " up")) {
+        if (read_file(p, buf, sizeof buf) > 0 && strstr(buf, " up")) {
             jfail("新守护 %d 秒内没连上, 已恢复旧守护(通道已回来, 机器没有失联)", secs);
         }
     }

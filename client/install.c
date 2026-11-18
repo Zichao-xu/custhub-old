@@ -287,7 +287,16 @@ static void svc_restore(void)
     char ps1[PATHLEN], tr[PATHLEN + 96];
     pjoin(ps1, "tun.ps1");
     win_kill_old();
-    if (!plat_is_file(ps1)) { cr_log("service.log", "没有旧 tun.ps1, 无从恢复"); return; }
+    if (!plat_is_file(ps1)) {
+        /* 原来就是 custhub 守护(接入时已把原 client.conf 换回来): 按原配置重建计划任务 */
+        char exe[PATHLEN], cf[PATHLEN];
+        pjoin(exe, "custhub" EXE); pjoin(cf, "client.conf");
+        if (plat_is_file(exe) && plat_is_file(cf) && win_task_new(exe) == 0) {
+            const char *r[] = { "schtasks", "/run", "/tn", "cust-tun", NULL };
+            sys(r); cr_log("service.log", "按原 client.conf 重新起 custhub 守护");
+        } else cr_log("service.log", "没有旧 tun.ps1, 也没有可用的 custhub 守护, 无从恢复");
+        return;
+    }
     snprintf(tr, sizeof tr, "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File %s", ps1);
     const char *c[] = { "schtasks", "/create", "/tn", "cust-tun", "/ru", "SYSTEM", "/sc", "onstart", "/f", "/tr", tr, NULL };
     const char *r[] = { "schtasks", "/run", "/tn", "cust-tun", NULL };
