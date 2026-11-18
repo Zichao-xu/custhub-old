@@ -726,7 +726,7 @@ int cmd_remove(int argc, char **argv)
     snprintf(ak, sizeof ak, "%s\\ssh\\administrators_authorized_keys", pd);
     if (read_file(ak, b, sizeof b) >= 0) {
         size_t l = 0; nw[0] = 0; char *cur = b, *ln;
-        while ((ln = next_line(&cur))) { size_t n = strlen(ln); if (*ln && !(n >= 11 && !strcmp(ln + n - 11, "cust-remote"))) { sb_add(nw, sizeof nw, &l, ln); sb_add(nw, sizeof nw, &l, "\r\n"); } }
+        while ((ln = next_line(&cur))) { size_t n = strlen(ln); if (*ln && !(n >= 11 && !strcmp(ln + n - 11, "cust-remote")) && !strstr(ln, "custhub-trust:")) {   /* 旧管理钥匙 + 信任清单写的行都删 */ sb_add(nw, sizeof nw, &l, ln); sb_add(nw, sizeof nw, &l, "\r\n"); } }
         write_file(ak, nw, l);
         const char *a[] = { "icacls", ak, "/inheritance:r", "/grant", "*S-1-5-32-544:F", "*S-1-5-18:F", NULL }; runw(a, 30);
     }

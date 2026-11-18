@@ -3,9 +3,10 @@
 #   ./test.sh        先 ./build.sh native
 set -uo pipefail
 cd "$(dirname "$0")"
-B=$PWD/custhub; [ -x "$B" ] || ./build.sh native >/dev/null
 W=$(mktemp -d); trap 'pkill -f "$W/fake-ssh" 2>/dev/null; kill $TP $HS 2>/dev/null; rm -rf "$W"' EXIT
 TP=; HS=
+# 被测程序固定编成 0.1.0, 升级目标编成 0.1.1(与 cr.h 里当前版本号无关, 发版改号不会让测试失效)
+B=$W/custhub-base; OUTBIN="$B" VER=0.1.0 ./build.sh native >/dev/null || exit 1
 pass=0; fail=0
 ok(){ if eval "$2"; then pass=$((pass+1)); echo "  ✓ $1"; else fail=$((fail+1)); echo "  ✗ $1"; fi; }
 
@@ -27,7 +28,7 @@ export CUSTHUB_AK_FILES="$W/u1/.ssh/authorized_keys $W/u2/.ssh/authorized_keys $
 mk(){ local v=$1; shift; local ns=${NS:-custhub-trust}
   { echo "custhub-trust-bundle v1"; echo "version $v"
     echo "key $(pk "$W/master") custhub-trust:master"; echo "ca $(pk "$W/ca") custhub-trust:hub-test"
-    echo "key ssh-ed25519 short custhub-trust:bad"; } >"$W/data"
+    echo "key ssh-ed25519 short custhub-trust:bad"; [ -n "${RETIRE:-}" ] && echo "retire cust-remote"; } >"$W/data"
   echo "kick output noise"; cat "$W/data"
   for k in "$@"; do ssh-keygen -Y sign -q -n "$ns" -f "$W/$k" "$W/data"; echo "--sig--"; cat "$W/data.sig"; rm -f "$W/data.sig"; done
   [ -z "${NOEND:-}" ] && echo "--end--"; true; }
@@ -64,6 +65,55 @@ ok "同版本/旧版本不重放" 'cmp -s "$W/before" "$W/u1/.ssh/authorized_key
 mk 101 master >"$W/b"; apply
 ok "主钥匙签的新版本应用" '[ "$(cat "$W/d/trust.ver")" = 101 ] && [ "$(grep -c custhub-trust: "$W/u1/.ssh/authorized_keys")" -eq 2 ]'
 ok "重复应用不叠行" '[ "$(grep -c custhub-trust:master "$W/u1/.ssh/authorized_keys")" -eq 1 ]'
+echo "== 验证器证书签名(中转 CA 签发)"
+cp "$W/u1/.ssh/authorized_keys" "$W/c-keep"; cp "$W/d/trust.ver" "$W/c-ver"
+ssh-keygen -q -t ed25519 -N '' -C sess -f "$W/sess"; ssh-keygen -q -t ed25519 -N '' -C ca2 -f "$W/ca2"
+ssh-keygen -q -s "$W/ca" -I otp-test -n custhub -V -5m:+2h "$W/sess.pub"; cp "$W/sess-cert.pub" "$W/c-ok"
+# mkc 版本 证书文件 [signed 时间|-]  → 用会话钥匙 + 证书签的清单
+mkc(){ cp "$2" "$W/sess-cert.pub"
+  { echo "custhub-trust-bundle v1"; echo "version $1"; [ "${3:-now}" != - ] && echo "signed $([ "${3:-now}" = now ] && date +%s || echo "$3")"
+    echo "key $(pk "$W/master") custhub-trust:master"; echo "ca $(pk "$W/ca") custhub-trust:hub-test"; } >"$W/data"
+  cat "$W/data"; ssh-keygen -Y sign -q -n custhub-trust -f "$W/sess-cert.pub" "$W/data"; echo "--sig--"; cat "$W/data.sig"; rm -f "$W/data.sig"; echo "--end--"; }
+cv(){ cat "$W/d/trust.ver"; }
+mkc 201 "$W/c-ok" >"$W/b"; apply
+ok "CA 签发的证书签的清单应用" '[ "$(cv)" = 201 ]'
+ok "记下 CA(ca.pub)" 'grep -q "^$(pk "$W/ca") custhub-trust:hub-test$" "$W/d/ca.pub"'
+mkc 202 "$W/c-ok" - >"$W/b"; apply
+ok "没有 signed 行就拒" '[ "$(cv)" = 201 ]'
+mkc 203 "$W/c-ok" $(( $(date +%s) + 3 * 3600 )) >"$W/b"; apply
+ok "signed 时间在证书有效期外就拒" '[ "$(cv)" = 201 ]'
+ssh-keygen -q -s "$W/ca2" -I otp-test -n custhub -V -5m:+2h "$W/sess.pub"; cp "$W/sess-cert.pub" "$W/c-evil"
+mkc 204 "$W/c-evil" >"$W/b"; apply
+ok "不认识的 CA 签发的证书就拒" '[ "$(cv)" = 201 ]'
+ssh-keygen -q -s "$W/ca" -I otp-test -n custhub -V -5m:+2d "$W/sess.pub"; cp "$W/sess-cert.pub" "$W/c-long"
+mkc 205 "$W/c-long" >"$W/b"; apply
+ok "有效期超过 1 天的证书就拒" '[ "$(cv)" = 201 ]'
+ssh-keygen -q -s "$W/ca" -I otp-test -h -n custhub -V -5m:+2h "$W/sess.pub"; cp "$W/sess-cert.pub" "$W/c-host"
+mkc 206 "$W/c-host" >"$W/b"; apply
+ok "主机证书就拒" '[ "$(cv)" = 201 ]'
+ssh-keygen -q -s "$W/ca" -I otp-test -n custhub -O force-command=true -V -5m:+2h "$W/sess.pub"; cp "$W/sess-cert.pub" "$W/c-crit"
+mkc 207 "$W/c-crit" >"$W/b"; apply
+ok "带 critical options 的证书就拒" '[ "$(cv)" = 201 ]'
+mkc 208 "$W/c-ok" >"$W/b"; sed -i.x 's/^version 208$/version 209/' "$W/b"; apply
+ok "证书签的内容改过就拒" '[ "$(cv)" = 201 ]'
+# 中转 release-pull 用 ssh-keygen 验(cert-authority 行), 同一份证书签名要能过
+mkc 210 "$W/c-ok" >"$W/b"; awk '/^--sig--$/{exit} {print}' "$W/b" >"$W/hd"; awk '/^--sig--$/{s=1; next} /^--end--$/{exit} s' "$W/b" >"$W/hs"
+echo "custhub cert-authority $(pk "$W/ca")" >"$W/hallow"
+ok "中转侧 ssh-keygen 认同一份证书签名" 'ssh-keygen -Y verify -f "$W/hallow" -I custhub -n custhub-trust -s "$W/hs" <"$W/hd" >/dev/null 2>&1'
+cp "$W/c-keep" "$W/u1/.ssh/authorized_keys"; cp "$W/c-ver" "$W/d/trust.ver"; rm -f "$W/d/ca.pub" "$W/sess-cert.pub"
+
+echo "== 退役旧管理钥匙"
+cp "$W/u1/.ssh/authorized_keys" "$W/u1-keep"; cp "$W/u2/.ssh/authorized_keys" "$W/u2-keep"
+RETIRE=1 mk 102 master >"$W/b"; apply
+ok "清单带退役指令 → 旧管理钥匙删掉" '! grep -q " cust-remote$" "$W/u1/.ssh/authorized_keys" && [ "$(cat "$W/d/trust.ver")" = 102 ]'
+ok "同一次改写里主钥匙行在, 别人的钥匙没动" 'grep -q "custhub-trust:master$" "$W/u1/.ssh/authorized_keys" && grep -q " someone$" "$W/u1/.ssh/authorized_keys"'
+ok "退役后主钥匙签的新清单照常应用" '{ mk 103 master >"$W/b"; apply; } && [ "$(cat "$W/d/trust.ver")" = 103 ]'
+ok "退役后旧钥匙签的清单不再认" '{ mk 104 old >"$W/b"; apply; } ; [ "$(cat "$W/d/trust.ver")" = 103 ]'
+cp "$W/u1-keep" "$W/u1/.ssh/authorized_keys"; echo 103 >"$W/d/trust.ver"
+{ echo "custhub-trust-bundle v1"; echo "version 105"; echo "ca $(pk "$W/ca") custhub-trust:hub-test"; echo "retire cust-remote"; } >"$W/data"
+{ cat "$W/data"; ssh-keygen -Y sign -q -n custhub-trust -f "$W/master" "$W/data"; echo "--sig--"; cat "$W/data.sig"; rm -f "$W/data.sig"; echo "--end--"; } >"$W/b"; apply
+ok "清单里没有主钥匙行就不退役(不会锁死自己)" 'grep -q " cust-remote$" "$W/u1/.ssh/authorized_keys"'
+cp "$W/u1-keep" "$W/u1/.ssh/authorized_keys"; cp "$W/u2-keep" "$W/u2/.ssh/authorized_keys"; echo 101 >"$W/d/trust.ver"   # 还原, 后面的用例接着用
 head -c 70000 /dev/zero | tr '\0' 'x' >"$W/b"; "$B" trust-apply "$W/b" >/dev/null 2>&1; r=$?
 ok "超长输入拒收不崩" '[ $r -eq 2 ]'
 
@@ -106,20 +156,23 @@ TP=
 
 echo "== 自升级(手动 upgrade + 试用期)"
 OUTBIN="$W/new-bin" VER=0.1.1 ./build.sh native >/dev/null
-rel(){ local v=$1 f=$2 k=$3
-  { echo "custhub-release v1"; echo "version $v"; echo "file dev $(wc -c <"$f" | tr -d ' ') $(shasum -a 512 "$f" | cut -d' ' -f1)"; } >"$W/rdata"
-  cat "$W/rdata"; ssh-keygen -Y sign -q -n custhub-release -f "$W/$k" "$W/rdata"; echo "--sig--"; cat "$W/rdata.sig"; rm -f "$W/rdata.sig"; echo "--end--"; }
+rel(){ local v=$1 f=$2 k=$3 only=${4:-} kf
+  { echo "custhub-release v1"; echo "version $v"; echo "signed $(date +%s)"; [ -n "$only" ] && echo "only $only"; echo "file dev $(wc -c <"$f" | tr -d ' ') $(shasum -a 512 "$f" | cut -d' ' -f1)"; } >"$W/rdata"
+  kf=$W/$k; [ "$k" = cert ] && { cp "$W/c-ok" "$W/sess-cert.pub"; kf=$W/sess-cert.pub; }   # cert = 验证器证书(中转 CA 签发)
+  cat "$W/rdata"; ssh-keygen -Y sign -q -n custhub-release -f "$kf" "$W/rdata"; echo "--sig--"; cat "$W/rdata.sig"; rm -f "$W/rdata.sig"; echo "--end--"; }
 U=$W/u; mkdir -p "$U"; cp "$W/d/master.pub" "$U/"; cp "$B" "$U/custhub"; touch "$U/tun_ed25519"
 printf 'port 22099\nssh %s\n' "$W/fake-ssh" >"$U/client.conf"
 printf 'hub-a.example 22 ssh-ed25519 %s\n' "$K" >"$U/hubs.txt"
 export CUSTHUB_D=$U
 rel 0.1.1 "$W/new-bin" evil >"$W/r-evil"; "$B" upgrade "$W/r-evil" "$W/new-bin" >/dev/null; r=$?
 ok "陌生钥匙签的发布清单拒" '[ $r -eq 1 ] && "$U/custhub" version | grep -q "^custhub 0.1.0"'
-rel 0.1.1 "$W/new-bin" master >"$W/r1"; cp "$W/new-bin" "$W/new-bad"; echo x >>"$W/new-bad"
+rel 0.1.1 "$W/new-bin" master "22001 22099" >"$W/r1"; cp "$W/new-bin" "$W/new-bad"; echo x >>"$W/new-bad"
 "$B" upgrade "$W/r1" "$W/new-bad" >/dev/null; r=$?
 ok "哈希不符拒" '[ $r -eq 1 ] && "$U/custhub" version | grep -q "^custhub 0.1.0"'
 rel 0.1.0 "$B" master >"$W/r0"; "$B" upgrade "$W/r0" "$B" >/dev/null; r=$?
 ok "不比自己新的不装" '[ $r -eq 0 ] && [ ! -f "$U/upgrade.pending" ]'
+rel 0.1.1 "$W/new-bin" master "22001 22002" >"$W/r-gray"; "$B" upgrade "$W/r-gray" "$W/new-bin" >/dev/null; r=$?
+ok "灰度清单不含本机就不升" '[ $r -eq 0 ] && [ ! -f "$U/upgrade.pending" ] && "$U/custhub" version | grep -q "^custhub 0.1.0" && grep -q "灰度版本, 不含本机" "$U/upgrade.log"'
 "$B" upgrade "$W/r1" "$W/new-bin" >/dev/null; r=$?
 ok "签名对、哈希对就换上" '[ $r -eq 0 ] && "$U/custhub" version | grep -q "^custhub 0.1.1" && "$U/custhub.old" version | grep -q "^custhub 0.1.0"'
 ok "进入试用期" 'grep -q "^0.1.0 0.1.1 0" "$U/upgrade.pending"'
@@ -152,13 +205,35 @@ kill $TP; wait $TP 2>/dev/null; kill $HS; pkill -f "$W/fake-ssh"; TP=; HS=
 
 echo "== 自升级(守护定时轮询中转的 release.txt, 不靠 kick)"
 rm -f "$U"/upgrade.* "$U/custhub.old"; cp "$B" "$U/custhub"
-rel 0.1.1 "$W/new-bin" master >"$W/www/pkg/client/release.txt"
+rel 0.1.1 "$W/new-bin" cert >"$W/www/pkg/client/release.txt"   # 只有证书签名(没有主钥匙那段)
 mk 301 master >"$W/kick.txt"                          # kick 只带信任清单
 python3 -m http.server $HP --bind 127.0.0.1 -d "$W/www" >/dev/null 2>&1 & HS=$!
 sleep 1; CUSTHUB_POLL=10 "$U/custhub" tun >/dev/null 2>&1 & TP=$!
 for i in $(seq 60); do grep -q 转正 "$U/upgrade.log" 2>/dev/null && break; sleep 0.5; done
-ok "轮询到 release.txt 就自升级" 'grep -q "取到 0.1.1, 核对通过" "$U/upgrade.log" && "$U/custhub" version | grep -q 0.1.1 && kill -0 $TP'
+ok "轮询到 release.txt(只有证书签名)就自升级" 'grep -q "取到 0.1.1, 核对通过" "$U/upgrade.log" && "$U/custhub" version | grep -q 0.1.1 && kill -0 $TP'
 kill $TP; wait $TP 2>/dev/null; kill $HS; pkill -f "$W/fake-ssh"; TP=; HS=
+
+echo "== 网络层(守护带起, 与反向通道并行; design-v3)"
+rm -f "$U"/upgrade.* "$U/custhub.old"; cp "$B" "$U/custhub"; rm -rf "$U/mesh"
+printf 'custhub-release v1\nversion 0.0.9\n' >"$W/www/pkg/client/release.txt"   # 比本机旧: 不升级, 只带名单
+mkdir -p "$W/relay"; "$B" mesh keygen "$W/relay" >"$W/relay.pub"
+{ echo "custhub-mesh-trust 1"; echo "relay hubA $(cat "$W/relay.pub") 127.0.0.1:1"; echo "--end--"; } >"$W/mdata"
+ssh-keygen -Y sign -q -n custhub-mesh-trust -f "$W/master" "$W/mdata"; cat "$W/mdata" "$W/mdata.sig" >"$W/www/pkg/client/custhub-0.0.9-mesh-trust"
+python3 -m http.server $HP --bind 127.0.0.1 -d "$W/www" >/dev/null 2>&1 & HS=$!
+mk 400 master >"$W/www/pkg/client/custhub-0.0.9-trust"                         # 发布物带的信任清单
+sleep 1; CUSTHUB_POLL=10 "$U/custhub" tun >/dev/null 2>&1 & TP=$!
+for i in $(seq 80); do pgrep -f "$U/custhub mesh run" >/dev/null && break; sleep 0.5; done
+ok "反向通道连着 20 秒后从发布物取到种子名单" '[ -f "$U/mesh/trust" ] && cmp -s "$U/mesh/trust" "$W/www/pkg/client/custhub-0.0.9-mesh-trust"'
+ok "生成本机网络身份, 配置带回拨口和 sshd 端口" '[ -f "$U/mesh/node.key" ] && grep -q "port=22099" "$U/mesh/conf" && grep -q "^allow 22$" "$U/mesh/conf"'
+for i in $(seq 40); do [ "$(cat "$U/trust.ver" 2>/dev/null)" = 400 ] && break; sleep 0.5; done
+ok "轮询时取到发布物带的信任清单并应用(不靠登录中转)" '[ "$(cat "$U/trust.ver")" = 400 ]'
+ok "网络层作为子进程跑起来" 'pgrep -f "$U/custhub mesh run" >/dev/null'
+sleep 2
+ok "名单里没有本机: 只等批准" '"$U/custhub" mesh ls "$U/mesh" | grep -q "还没被批准"'
+ok "反向通道不受影响" 'pgrep -f "$W/fake-ssh.*-R" >/dev/null'
+kill $TP; wait $TP 2>/dev/null; sleep 1
+ok "守护退出时网络层一起退" '! pgrep -f "$U/custhub mesh run" >/dev/null'
+kill $HS; pkill -f "$W/fake-ssh"; TP=; HS=
 
 echo "== 服务注册(演练模式, 不动本机服务)"
 I=$W/i; mkdir -p "$I"; export CUSTHUB_D=$I CUSTHUB_SVC_DRY=1 CUSTHUB_WAIT=6

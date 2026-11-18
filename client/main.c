@@ -35,6 +35,7 @@ int main(int argc, char **argv)
     const char *c = argc > 1 ? argv[1] : "";
     if (!strcmp(c, "tun")) return cmd_tun(argc - 1, argv + 1);
     if (!strcmp(c, "engineer")) return cmd_engineer();
+    if (!strcmp(c, "mesh")) return cmd_mesh(argc - 1, argv + 1);
     if (!strcmp(c, "verify")) return cmd_verify(argc, argv);
     if (!strcmp(c, "trust-apply") && argc == 3) {
         static char buf[MAXBUF];

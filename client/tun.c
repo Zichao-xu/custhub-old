@@ -25,6 +25,7 @@ static int nhubs;
 static void stop_all(void)
 {
     for (int i = 0; i < nhubs; i++) plat_kill(&hubs[i].p);
+    meshd_stop();
 }
 
 static hub_t *hub_get(const char *h)
@@ -181,12 +182,18 @@ int cmd_tun(int argc, char **argv)
         pjoin(sp, "tun-status.txt");
         write_file(sp, st, sl);
         upgrade_trial_tick(any_up, started);
+        {   /* 网络层(新旧并行): 只从此刻连着的中转取名单 */
+            const char *alive[MAXHUBS]; int na = 0;
+            for (int i = 0; i < nhubs; i++) if (hubs[i].want && plat_alive(&hubs[i].p) && now - hubs[i].since >= UP_AFTER) alive[na++] = hubs[i].host;
+            meshd_tick(&c, alive, na);
+        }
         if (now >= next_poll) {
             next_poll = now + 600 + (now % 120);           /* 每 10 分钟左右, 错开各客户机 */
             for (int i = 0; i < nhubs; i++) {
                 if (!hubs[i].want || !plat_alive(&hubs[i].p)) continue;   /* 问正连着的中转 */
                 if (http_get_text(hubs[i].host, c.http_port, "/pkg/client/release.txt", kick, sizeof kick) == 200) {
                     upgrade_check(kick, hubs[i].host, stop_all);   /* 有新版: 换上并重启, 不会返回 */
+                    release_trust(kick, hubs[i].host);              /* 没有新版(或已是它): 取发布物带的信任清单 */
                     break;
                 }
             }

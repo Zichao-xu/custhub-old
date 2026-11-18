@@ -1,7 +1,10 @@
 /* 信任清单(SPEC §3): 从中转顺带发来的文本里截出 → 用本机已信任的钥匙验签 → 只改带 custhub-trust: 标记的行
  * 行为与 trust-apply.sh / trust-apply.ps1 一致:
- *   验签钥匙 = authorized_keys 里旧管理钥匙(注释 cust-remote) 或主钥匙(custhub-trust:master), 不认 cert-authority 行
- *   旧管理钥匙永远不动 → 清单再错也不会把我们锁在外面; 版本号只升不降 */
+ *   验签钥匙 = authorized_keys 里旧管理钥匙(注释 cust-remote) 或主钥匙(custhub-trust:master),
+ *             或中转 CA(带 custhub-trust: 标记的 cert-authority 行)签发的证书 —— 即验证器 6 位数换来的 2 小时证书
+ *   旧管理钥匙默认不动 → 清单再错也不会把我们锁在外面; 版本号只升不降
+ *   清单里有 "retire cust-remote" 行(签名覆盖)时退役旧管理钥匙: 只在本份清单带主钥匙 key 行时才删,
+ *   主钥匙行和删除写在同一次改写里 —— 删完那一刻主钥匙已经在了, 不会出现两把都没有的时刻 */
 #include "cr.h"
 #include "plat.h"
 #include <stdio.h>
@@ -41,8 +44,26 @@ int bundle_parse(const char *text, const char *head, bundle_t *b)
 
 int bundle_verify(const bundle_t *b, const char *ns, uint8_t (*keys)[32], int nkeys)
 {
+    return bundle_verify_ca(b, ns, keys, nkeys, NULL, 0);
+}
+
+/* 被签内容里的 "signed <unix 时间>" 行(证书签名必须有, 且落在证书有效期内) */
+static long long signed_at(const bundle_t *b)
+{
+    const char *p = strstr(b->data, "\nsigned ");
+    if (!p) return 0;
+    p += 8;
+    char v[16]; size_t n = strspn(p, "0123456789");
+    if (!n || n > 12 || (p[n] != '\n' && p[n] != '\r')) return 0;
+    memcpy(v, p, n); v[n] = 0;
+    return atoll(v);
+}
+
+int bundle_verify_ca(const bundle_t *b, const char *ns, uint8_t (*keys)[32], int nkeys, uint8_t (*cas)[32], int ncas)
+{
+    long long at = signed_at(b);
     for (int i = 0; i < b->nsig; i++)
-        if (sshsig_verify(b->sig[i], (const uint8_t *)b->data, b->dlen, ns, keys, nkeys)) return 1;
+        if (sshsig_verify_ca(b->sig[i], (const uint8_t *)b->data, b->dlen, ns, keys, nkeys, cas, ncas, at)) return 1;
     return 0;
 }
 
@@ -85,6 +106,35 @@ static int keys_from_ak(char (*t)[512], int nt, uint8_t (*keys)[32], int max, in
     return n;
 }
 
+/* 带信任标记的 cert-authority 行 = 中转 CA */
+static int cas_from_ak(char (*t)[512], int nt, uint8_t (*keys)[32], int max)
+{
+    static char buf[MAXBUF];
+    int n = 0;
+    for (int i = 0; i < nt; i++) {
+        if (read_file(t[i], buf, sizeof buf) < 0) continue;
+        char *cur = buf, *l;
+        while ((l = next_line(&cur)))
+            if (strstr(l, "cert-authority") && strstr(l, " " MARK ":")) n = add_key(keys, n, max, l);
+    }
+    return n;
+}
+
+int ca_keys(uint8_t (*keys)[32], int max)
+{
+    char p[PATHLEN], buf[4096];
+    int n = 0;
+    pjoin(p, "ca.pub");
+    if (read_file(p, buf, sizeof buf) >= 0) {
+        char *cur = buf, *l;
+        while ((l = next_line(&cur))) n = add_key(keys, n, max, l);
+    }
+    if (n) return n;
+    char t[MAXAK][512];
+    int nt = ak_targets(t);
+    return cas_from_ak(t, nt, keys, max);
+}
+
 int master_keys(uint8_t (*keys)[32], int max)
 {
     char p[PATHLEN], buf[4096];
@@ -125,7 +175,14 @@ static int valid_entry(const char *l, int *is_ca, char *key, size_t cap)
 
 typedef struct { int ca; char k[160]; } ent_t;
 
-static int rewrite(const char *path, ent_t *e, int ne)
+static int is_oldkey(const char *l)            /* 注释正好是 cust-remote 的那行(行尾可能带 \r) */
+{
+    size_t n = strlen(l), k = strlen(OLDKEY);
+    while (n && (l[n - 1] == '\r' || l[n - 1] == ' ')) n--;
+    return n > k && !strncmp(l + n - k, OLDKEY, k) && l[n - k - 1] == ' ';
+}
+
+static int rewrite(const char *path, ent_t *e, int ne, int retire)
 {
     static char buf[MAXBUF], nw[MAXBUF];
     size_t len = 0;
@@ -134,6 +191,7 @@ static int rewrite(const char *path, ent_t *e, int ne)
     char *cur = buf, *l;
     while ((l = next_line(&cur))) {
         if (!*l || strstr(l, MARK ":")) continue;
+        if (retire && is_oldkey(l)) continue;
         if (sb_add(nw, sizeof nw, &len, l) || sb_add(nw, sizeof nw, &len, "\n")) return -1;
     }
     for (int i = 0; i < ne; i++) {
@@ -174,9 +232,9 @@ int trust_apply(const char *text)
     int nt = ak_targets(t);
     if (!nt) { cr_log("trust.log", "版本 %lld: 本机没有要维护的 authorized_keys, 不应用", v); return 0; }
 
-    uint8_t keys[MAXKEYS][32];
-    int nk = keys_from_ak(t, nt, keys, MAXKEYS, 0);
-    if (!bundle_verify(&b, MARK, keys, nk)) {
+    uint8_t keys[MAXKEYS][32], cas[MAXKEYS][32];
+    int nk = keys_from_ak(t, nt, keys, MAXKEYS, 0), nc = cas_from_ak(t, nt, cas, MAXKEYS);
+    if (!bundle_verify_ca(&b, MARK, keys, nk, cas, nc)) {
         cr_log("trust.log", "版本 %lld 验签没过, 不应用", v);
         return -1;
     }
@@ -184,22 +242,28 @@ int trust_apply(const char *text)
     static ent_t e[MAXKEYS];
     int ne = 0;
     char master[MAXBUF / 4]; size_t ml = 0; master[0] = 0;
+    char cab[MAXBUF / 4]; size_t cl = 0; cab[0] = 0;
+    int retire = 0;
     while ((l = next_line(&cur)) && ne < MAXKEYS) {
+        if (!strcmp(l, "retire " OLDKEY)) { retire = 1; continue; }
         if (!valid_entry(l, &e[ne].ca, e[ne].k, sizeof e[ne].k)) continue;
         if (!e[ne].ca && strstr(e[ne].k, " " MARK ":master") && ml + strlen(e[ne].k) + 2 < sizeof master) {
             sb_add(master, sizeof master, &ml, e[ne].k); sb_add(master, sizeof master, &ml, "\n");
         }
+        if (e[ne].ca && cl + strlen(e[ne].k) + 2 < sizeof cab) { sb_add(cab, sizeof cab, &cl, e[ne].k); sb_add(cab, sizeof cab, &cl, "\n"); }
         ne++;
     }
+    if (retire && !ml) { cr_log("trust.log", "版本 %lld 要退役旧管理钥匙, 但清单里没有主钥匙: 不退役", v); retire = 0; }
     int ok = 0;
     for (int i = 0; i < nt; i++) {
-        if (rewrite(t[i], e, ne)) cr_log("trust.log", "版本 %lld: 写 %s 失败", v, t[i]);
+        if (rewrite(t[i], e, ne, retire)) cr_log("trust.log", "版本 %lld: 写 %s 失败", v, t[i]);
         else ok++;
     }
     if (!ok) return -1;
     snprintf(vb, sizeof vb, "%lld\n", v);
     write_file(p, vb, strlen(vb));
     if (ml) { pjoin(p, "master.pub"); write_file(p, master, ml); }   /* 给工程师登录验节点目录用(普通用户读不到 root 的 authorized_keys) */
-    cr_log("trust.log", "已应用信任清单版本 %lld (%d 条) → %d 份 authorized_keys", v, ne, ok);
+    pjoin(p, "ca.pub"); write_file(p, cab, cl);                      /* 同上: 认 CA 证书签的名用 */
+    cr_log("trust.log", "已应用信任清单版本 %lld (%d 条) → %d 份 authorized_keys%s", v, ne, ok, retire ? ", 旧管理钥匙已退役" : "");
     return 1;
 }

@@ -11,8 +11,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 V=$(sed -n 's/^#define CR_VERSION "\(.*\)"/\1/p' cr.h)
-SRC=(main.c util.c sshsig.c trust.c tun.c engineer.c http.c upgrade.c install.c join.c join_win.c posix.c win.c vendor/monocypher.c vendor/monocypher-ed25519.c)
-CF=(-std=c99 -Os -Wall -Wextra -Wno-unused-parameter -ffunction-sections -fdata-sections -DNDEBUG)
+SRC=(main.c util.c sshsig.c trust.c tun.c meshd.c engineer.c http.c upgrade.c install.c join.c join_win.c posix.c win.c vendor/monocypher.c vendor/monocypher-ed25519.c
+     ../mesh/util.c ../mesh/noise.c ../mesh/link.c ../mesh/hop.c ../mesh/disc.c ../mesh/app.c ../mesh/main.c)   # 网络层(design-v3), custhub mesh …
+CF=(-std=c99 -Os -Wall -Wextra -Wno-unused-parameter -ffunction-sections -fdata-sections -DNDEBUG -DMESH_IN_CUSTHUB)
 
 if [ "${1:-}" = native ]; then
   o=${OUTBIN:-custhub}   # 测试用: OUTBIN=输出路径 VER=版本号 编一份"别的版本"
@@ -37,7 +38,7 @@ w(){  # w x86_64|i686 输出名
   case $n in ${ONLY:-}*) ;; *) return 0 ;; esac
   [ -d "$MINGW/$t-w64-mingw32/lib" ] || { echo "缺 Windows sysroot: $MINGW(见脚本开头)" >&2; exit 1; }
   o=$(mktemp -d); local f="$OUT/custhub-$V-$n.exe" lb="$MINGW/$t-w64-mingw32/lib"
-  for s in "${SRC[@]}"; do clang -target $t-w64-mingw32 --sysroot="$MINGW" "${CF[@]}" -DCR_PLAT="\"$n\"" -c -o "$o/$(basename "$s" .c).o" "$s"; done
+  for s in "${SRC[@]}"; do clang -target $t-w64-mingw32 --sysroot="$MINGW" "${CF[@]}" -D_WIN32_WINNT=0x0601 -DCR_PLAT="\"$n\"" -c -o "$o/$(echo "$s" | tr '/.' '__').o" "$s"; done
   zig lld-link -lldmingw -machine:$m -subsystem:console -entry:mainCRTStartup -opt:ref -debug:none -out:"$f" \
     "$lb/crt2.o" "$lb/crtbegin.o" "$o"/*.o "$lb/crtend.o" -libpath:"$lb" -libpath:"$(ls -d "$MINGW"/lib/clang/*/lib/windows)" \
     libws2_32.a libmingw32.a libclang_rt.builtins-$rt.a libmoldname.a libmingwex.a libmsvcrt.a libadvapi32.a libkernel32.a \

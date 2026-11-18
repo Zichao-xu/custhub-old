@@ -113,21 +113,21 @@ int cmd_engineer(void)
         if (write_file(cfg, cf, cl)) goto done;
     }
 
-    /* 3. 节点目录: 验主钥匙签名; 本机还不知道主钥匙时照旧用, 但提示 */
+    /* 3. 节点目录: 验主钥匙或中转 CA 证书的签名; 本机两样都不知道时照旧用, 但提示 */
     static bundle_t dir;
     static char raw[MAXBUF];
     int got = 0;
     {
-        uint8_t mk[MAXKEYS][32];
-        int nm = master_keys(mk, MAXKEYS);
+        static uint8_t mk[MAXKEYS][32], ck[MAXKEYS][32];
+        int nm0 = master_keys(mk, MAXKEYS), nc = ca_keys(ck, MAXKEYS), nm = nm0 + nc;
         for (int i = 0; i < nh && !got; i++) {
             char hn[16]; snprintf(hn, sizeof hn, "hub%d", i + 1);
             const char *av[] = { c.ssh, "-n", "-F", cfg, hn, "dir-get", NULL };
             if (plat_run(av, raw, sizeof raw, 30) != 0) continue;
             if (bundle_parse(raw, "custhub-dir v1", &dir)) continue;
-            if (nm && !bundle_verify(&dir, "custhub-dir", mk, nm)) { out("中转 %s 给的节点目录验签没过, 换下一台\n", hubs[i].host); continue; }
+            if (nm && !bundle_verify_ca(&dir, "custhub-dir", mk, nm0, ck, nc)) { out("中转 %s 给的节点目录验签没过, 换下一台\n", hubs[i].host); continue; }
             got = 1;
-            if (!nm) out("(本机还没有主公钥, 节点目录未验签)\n");
+            if (!nm) out("(本机还没有主公钥/CA, 节点目录未验签)\n");
         }
     }
     if (!got) { out("连不上中转\n"); goto done; }

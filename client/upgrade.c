@@ -205,9 +205,26 @@ static int parse_release(const char *text, char *ver, long *size, uint8_t sha[64
     if (!l || strncmp(l, "version ", 8) || ver_num(l + 8) < 0 || strlen(l + 8) > 15) return -1;
     strcpy(ver, l + 8);
     if (ver_num(ver) <= ver_num(CR_VERSION)) return 1;
-    uint8_t keys[MAXKEYS][32];
-    int nk = master_keys(keys, MAXKEYS);
-    if (!nk || !bundle_verify(&b, "custhub-release", keys, nk)) { cr_log("upgrade.log", "发布清单 %s 验签没过", ver); return -1; }
+    static uint8_t keys[MAXKEYS][32], cas[MAXKEYS][32];
+    int nk = master_keys(keys, MAXKEYS), nc = ca_keys(cas, MAXKEYS);
+    if ((!nk && !nc) || !bundle_verify_ca(&b, "custhub-release", keys, nk, cas, nc)) { cr_log("upgrade.log", "发布清单 %s 验签没过", ver); return -1; }
+    /* 灰度: 清单里有 only 行(签名覆盖)就只发给列出的回拨口; 没有 only 行 = 全部 */
+    {
+        static char o[MAXBUF]; static char said[32];
+        memcpy(o, b.data, b.dlen + 1);
+        char *oc = o, *ol; int has = 0, mine = 0;
+        conf_t cc; conf_load(&cc);
+        while ((ol = next_line(&oc))) {
+            if (strncmp(ol, "only ", 5)) continue;
+            has = 1;
+            char *sv = ol + 5, *tok;
+            while ((tok = strtok(sv, " ")) != NULL) { sv = NULL; if (cc.port[0] && !strcmp(tok, cc.port)) mine = 1; }
+        }
+        if (has && !mine) {
+            if (strcmp(said, ver)) { snprintf(said, sizeof said, "%s", ver); cr_log("upgrade.log", "%s 是灰度版本, 不含本机(回拨口 %s), 不升", ver, cc.port); }
+            return 1;
+        }
+    }
     while ((l = next_line(&cur))) {
         char plat[32], hex[160]; long sz;
         if (sscanf(l, "file %31s %ld %159s", plat, &sz, hex) != 3) continue;
@@ -240,6 +257,20 @@ void upgrade_check(const char *kick, const char *host, void (*stop_children)(voi
     if (r) { remove(nw); cr_log("upgrade.log", "%s %s", ver, r == -1 ? "大小或哈希不符, 丢弃" : "跑不起来或版本不对, 丢弃"); return; }
     cr_log("upgrade.log", "从 %s 取到 %s, 核对通过", host, ver);
     swap_in(ver, 1);
+}
+
+/* 信任清单随发布物下发: release.txt 里的版本 → /pkg/client/custhub-<版本>-trust(主钥匙签的 custhub-trust-bundle)
+ * 清单自带签名和版本号, 这里只管取; 验签、只升不降、退役旧钥匙都在 trust_apply 里。中转照常拉取转发, 不用登录中转 */
+void release_trust(const char *release_text, const char *host)
+{
+    static char t[MAXBUF];
+    char ver[32] = "", url[96];
+    const char *v = strstr(release_text, "\nversion ");
+    if (!v || sscanf(v + 9, "%31s", ver) != 1 || ver_num(ver) < 0) return;
+    conf_t c; conf_load(&c);
+    snprintf(url, sizeof url, "/pkg/client/custhub-%s-trust", ver);
+    if (http_get_text(host, c.http_port, url, t, sizeof t) != 200 || !strstr(t, "custhub-trust-bundle v1")) return;
+    if (trust_apply(t) < 0) cr_log("trust.log", "发布物 %s 带的信任清单没应用(见上一行)", ver);
 }
 
 /* 手动: custhub upgrade 清单文件 二进制 —— 与自动升级同样的验签/核对, 换上但不重启 */

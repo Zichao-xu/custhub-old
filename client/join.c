@@ -499,13 +499,13 @@ static void addkey(const char *home, const char *owner, int open)
     if (pw) { if (chown(d, pw->pw_uid, pw->pw_gid) || chown(f, pw->pw_uid, pw->pw_gid)) {} }
 }
 
-static void strip_key(const char *f)                      /* 卸载: 删掉含 cust-remote 的行 */
+static void strip_key(const char *f)                      /* 卸载: 删掉我们的行(旧管理钥匙 cust-remote + 信任清单写的 custhub-trust:) */
 {
     static char buf[MAXBUF], nw[MAXBUF];
     if (read_file(f, buf, sizeof buf) < 0) return;
     size_t l = 0; nw[0] = 0;
     char *cur = buf, *ln;
-    while ((ln = next_line(&cur))) if (*ln && !strstr(ln, "cust-remote")) { sb_add(nw, sizeof nw, &l, ln); sb_add(nw, sizeof nw, &l, "\n"); }
+    while ((ln = next_line(&cur))) if (*ln && !strstr(ln, "cust-remote") && !strstr(ln, "custhub-trust:")) { sb_add(nw, sizeof nw, &l, ln); sb_add(nw, sizeof nw, &l, "\n"); }
     FILE *o = fopen(f, "w");
     if (o) { fwrite(nw, 1, l, o); fclose(o); }
 }
